@@ -74,6 +74,90 @@ flowchart TD
 
 ## 三、安装与部署
 
+### 🚀 最省事：把这段提示词发给 AI，让它全自动帮你装好
+
+**前提只有一个**：你用的 AI 能读写本机文件、能执行命令（WorkBuddy 桌面端、Trae CN、Cursor、Claude Code、Codex 等本机 Agent 都行）。纯网页版聊天机器人没有这些能力，只能给你念步骤。
+
+**用法**：把下面**整段**复制，直接发给 AI，然后等它汇报结果即可。它自己会检查环境、下载项目、跑通签到、注册计划任务并验证。
+
+```text
+你是负责帮我在 Windows 电脑上部署一个开源项目的 AI 助手。请直接动手把部署做完，不要只给我步骤、不要让我自己敲命令。每一步都必须真实执行并验证；禁止编造执行结果，某步没做就写明"未执行"并说明原因。
+
+【目标】
+把 GitHub 项目 xinshang777/auto-checkin 部署到我这台 Windows 电脑上，实现"每天自动完成 Trae CN 与 WorkBuddy 的每日签到"，并注册为登录后自动运行的计划任务。
+
+【第一步：环境体检，逐项确认】
+1. 操作系统是否为 Windows 10/11（命令：右键"此电脑"属性，或 PowerShell 里执行 [System.Environment]::OSVersion.Version）。
+2. 是否有 Node.js 18 或更高：
+   - 优先检查托管 Node 是否存在：%USERPROFILE%\.workbuddy\binaries\node\versions\ 目录下找 node.exe，有就记下完整路径，后续都用它；
+   - 没有就检查系统 node：node -v；
+   - 两者都没有，帮我安装 Node.js LTS（winget install OpenJS.NodeJS.LTS，或从 https://nodejs.org 下载安装包），装完重新确认。
+3. 我是否装了 Trae CN 客户端并处于登录状态（签到靠读取它的本机登录态取 token）。
+4. 我是否装了 WorkBuddy 桌面端并近期登录过（可选，没有这一端会自动跳过）。
+把以上 4 项的检查结果先告诉我。若 Trae CN 没装或没登录，明确提醒我"请打开 Trae CN 客户端登录一次"，然后继续完成其余步骤，不要因此停下。
+
+【第二步：下载项目】
+默认装到 %USERPROFILE%\auto-checkin：
+  git clone https://github.com/xinshang777/auto-checkin.git
+如果 git 不可用，就下载仓库 ZIP（https://github.com/xinshang777/auto-checkin/archive/refs/heads/main.zip）并解压到同一位置。
+提示：如果目标路径含中文或空格，后续所有命令都要用引号把路径包起来。
+
+【第三步：安装依赖 —— 默认跳过】
+本项目纯签到部分是零 npm 依赖的。不要执行 npm install，也不要下载 Playwright 浏览器，除非后面确实需要抓 token 而失败。这样能省下几分钟和几百 MB。
+
+【第四步：准备配置】
+把 config.example.json 复制一份为 config.json。
+两个平台的 token 字段保持留空即可，脚本会自动从本机客户端登录态里取。
+安全要求：config.json 里会存 token，不要把它写到任何仓库、日志或聊天记录里，也不要回显它的完整内容。
+
+【第五步：先手动跑一次，确认真的能签到】
+用第二步选定的 node.exe 执行 checkin.js（例如：%USERPROFILE%\.workbuddy\binaries\node\versions\ 下的 node.exe checkin.js，或直接用 node checkin.js）。
+判定成功：输出里出现下面任意一句即算成功——
+  "WorkBuddy 签到成功" 或 "WorkBuddy 今日已签到（幂等）" 或 "Trae 签到成功"
+失败时按下面处理，不要直接放弃：
+  - 提示"未找到 WorkBuddy token"：让我打开 WorkBuddy 桌面端登录一次，然后重跑。
+  - 提示"未找到 Trae token"：让我打开 Trae CN 客户端登录一次，然后重跑。
+  - Trae 提示 9074：先重跑一次，本脚本自带退避重试；若一直 9074，检查日志里的 x-device-id 警告。
+
+【第六步：注册计划任务（每天 09:00 / 13:00 / 17:00 / 21:00 自动运行）】
+在 PowerShell 里执行项目目录下的注册脚本：
+  powershell -ExecutionPolicy Bypass -File .\register-task.ps1
+注意两点：
+  1. 必须用 PowerShell 的 Register-ScheduledTask 机制完成注册；有些电脑把 schtasks.exe 禁用了，不要调用 schtasks.exe。
+  2. 如果报"语法错误"，说明 register-task.ps1 在传输过程中丢了 BOM——请把它按 UTF-8 with BOM 重新保存，再执行一次。
+
+【第七步：手动触发一次，确认任务真能跑起来】
+  Start-ScheduledTask -TaskName DailyCheckin
+等待 20 到 60 秒，然后读项目目录下 checkin.log 的最后 30 行，确认这次触发留下了成功记录。
+再核对任务注册情况：
+  Get-ScheduledTask -TaskName DailyCheckin
+应看到 4 个每日触发器（09:00 / 13:00 / 17:00 / 21:00），状态为 Ready。
+
+【必须遵守】
+- 全程真实执行，把每步的真实命令输出贴出来；不要脑补结果。
+- 任何输出里不要打印完整 token（最多显示前 6 位）。
+- 不要修改 checkin.js 和 lib/ 目录下的签到逻辑，本次只做部署。
+- 不要删除或改动项目目录以外的任何文件。
+- 某步失败：先自行排查（重试、看 checkin.log、按上面提示处理），仍失败就停下来，告诉我具体报错、已经试过什么、当前卡在哪一步。
+
+【最后按这个格式汇报】
+1. 项目路径：
+2. 使用的 Node 路径与版本：
+3. 手动运行结果：成功 / 失败，附关键日志行
+4. 计划任务：任务名、4 个触发时间、当前状态
+5. checkin.log 最近一次运行结果
+6. 还需要我做的事（例如"请打开 Trae CN 客户端登录一次"）
+7. 后续如何自查：PowerShell 执行 Get-ScheduledTask -TaskName DailyCheckin 看状态，看 checkin.log 看结果
+```
+
+> 如果 AI 能直接联网读仓库，你也可以只说一句：**"按 https://github.com/xinshang777/auto-checkin 的 README 里那段 AI 部署提示词，帮我把这个项目部署好。"**
+
+---
+
+### 手动部署（可选）
+
+下面是从零开始的手动步骤。只有在"AI 装不了"或"你想自己控制每一步"时才需要看。
+
 ### 前置条件
 
 | 项 | 要求 |
