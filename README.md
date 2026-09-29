@@ -1,8 +1,6 @@
-# auto-checkin ![version](https://img.shields.io/badge/version-1.0.0-blue) ![host](https://img.shields.io/badge/Node-%E2%89%A518%20%7C%20Windows%2010%2F11-339933) ![license](https://img.shields.io/badge/license-%E6%9C%AA%E6%8C%87%E5%AE%9A-lightgrey)
+# auto-checkin ![version](https://img.shields.io/badge/version-1.1.2-blue) ![host](https://img.shields.io/badge/Node-%E2%89%A518%20%7C%20Windows%2010%2F11-339933) ![license](https://img.shields.io/badge/license-%E6%9C%AA%E6%8C%87%E5%AE%9A-lightgrey)
 
 > 一句话定位：它把你每天要手动点的 **Trae CN + WorkBuddy** 签到，变成开机后自动跑完的 Windows 计划任务——给天天用这两个工具、又总忘记签到的人用。
-
-![改造前 / 改造后](https://raw.githubusercontent.com/xinshang777/auto-checkin/main/docs/before-after.gif)
 
 | 项 | 改造前 | 改造后 |
 | --- | --- | --- |
@@ -27,10 +25,11 @@
 | 项目 | 要求 | 说明 |
 | --- | --- | --- |
 | 操作系统 | Windows 10 / 11 | `register-task.ps1` 依赖 Windows 计划任务 |
-| Node.js | **≥ 18** | 签到逻辑用到内置 `fetch`；可直接用 WorkBuddy 自带的托管 Node |
+| Node.js | **≥ 18** | 签到逻辑用到内置 `fetch`（可直接用 WorkBuddy 自带的托管 Node）。若还要用 Playwright 兜底抓 token，则需 **≥ 20**（`playwright@1.63` 的 `engines` 要求），否则 `npm install` 会报 `EBADENGINE` |
 | Trae CN 客户端 | 已安装且**处于登录状态** | 脚本从它的 `storage.json` 解密出 token（**只读**） |
 | WorkBuddy 桌面端 | 已安装且**近期登录过** | 可选；缺这一端脚本会自动跳过 |
 | PowerShell | 5.1 或更高 | 注册计划任务用 `Register-ScheduledTask`（**不用** `schtasks.exe`） |
+| Windows Script Host | 系统自带（Win10/11 默认启用） | `run-hidden.vbs` 隐藏窗口启动器依赖它；缺失时注册脚本会回退成直接跑 `node.exe`（会弹控制台窗口） |
 
 ### 该选哪种方式
 
@@ -87,19 +86,21 @@
   - 提示"未找到 Trae token"：让我打开 Trae CN 客户端登录一次，然后重跑。
   - Trae 提示 9074：先重跑一次，本脚本自带退避重试；若一直 9074，检查日志里的 x-device-id 警告。
 
-【第六步：注册计划任务（每天 09:00 / 13:00 / 17:00 / 21:00 自动运行）】
+【第六步：注册计划任务（每天 09:00 / 13:00 / 17:00 / 21:00 自动运行，隐藏窗口无感运行）】
 在 PowerShell 里执行项目目录下的注册脚本：
   powershell -ExecutionPolicy Bypass -File .\register-task.ps1
-注意两点：
+注意三点：
   1. 必须用 PowerShell 的 Register-ScheduledTask 机制完成注册；有些电脑把 schtasks.exe 禁用了，不要调用 schtasks.exe。
   2. 如果报"语法错误"，说明 register-task.ps1 在传输过程中丢了 BOM——请把它按 UTF-8 with BOM 重新保存，再执行一次。
+  3. 注册脚本会把任务动作设为 wscript.exe 执行同目录下的 run-hidden.vbs（隐藏窗口启动 node），这样到点运行时不会弹出任何命令提示符窗口。注册后用 Get-ScheduledTask -TaskName DailyCheckin 确认动作里出现 run-hidden.vbs 和 Hidden=True。
 
 【第七步：手动触发一次，确认任务真能跑起来】
   Start-ScheduledTask -TaskName DailyCheckin
-等待 20 到 60 秒，然后读项目目录下 checkin.log 的最后 30 行，确认这次触发留下了成功记录。
+这一步屏幕不会有任何反应（隐藏窗口后台运行），属正常现象。等待 20 到 60 秒，然后读项目目录下 checkin.log 的最后 30 行，确认这次触发留下了成功记录。
 再核对任务注册情况：
   Get-ScheduledTask -TaskName DailyCheckin
-应看到 4 个每日触发器（09:00 / 13:00 / 17:00 / 21:00），状态为 Ready。
+应看到 4 个每日触发器（09:00 / 13:00 / 17:00 / 21:00），状态为 Ready；同时用 Get-ScheduledTaskInfo -TaskName DailyCheckin 看 LastTaskResult（0 = 正常）。
+另外说明：注册脚本会注销同名旧任务再重建，所以不会出现两个同名任务。
 
 【必须遵守】
 - 全程真实执行，把每步的真实命令输出贴出来；不要脑补结果。
@@ -112,10 +113,10 @@
 1. 项目路径：
 2. 使用的 Node 路径与版本：
 3. 手动运行结果：成功 / 失败，附关键日志行
-4. 计划任务：任务名、4 个触发时间、当前状态
-5. checkin.log 最近一次运行结果
+4. 计划任务：任务名、4 个触发时间、当前状态、LastTaskResult（0 为正常），以及执行命令是否为 `wscript.exe …run-hidden.vbs`（隐藏窗口）
+5. checkin.log 最近一次运行结果；若显示"本轮跳过"，说明当天已签完，属正常
 6. 还需要我做的事（例如"请打开 Trae CN 客户端登录一次"）
-7. 后续如何自查：PowerShell 执行 Get-ScheduledTask -TaskName DailyCheckin 看状态，看 checkin.log 看结果
+7. 后续如何自查：PowerShell 执行 Get-ScheduledTask -TaskName DailyCheckin 看状态，看 checkin.log 看结果（后台运行没有窗口提示，日志是唯一痕迹）
 ```
 
 > 如果 AI 能直接联网读仓库，你也可以只说一句：**"按 https://github.com/xinshang777/auto-checkin 的 README 里那段 AI 部署提示词，帮我把这个项目部署好。"**
@@ -133,8 +134,8 @@ powershell -ExecutionPolicy Bypass -File .\register-task.ps1
 ```
 
 - 项目目录**可以整体移动**到任意位置，移动后重跑一次注册脚本即可（任务里记录的是绝对路径）。
-- 想用 WorkBuddy 自带托管 Node：`"%USERPROFILE%\.workbuddy\binaries\node\versions\22.22.2-3\node.exe" checkin.js`。
-- 改签到时间：编辑 `register-task.ps1` 里的 `$triggers` 数组后重跑注册脚本。
+- 想用 WorkBuddy 自带托管 Node（版本目录名以你机器上的为准）：`"%USERPROFILE%\.workbuddy\binaries\node\versions\<版本>\node.exe" checkin.js`。
+- 改签到时间：编辑 `register-task.ps1` 里的 `$TriggerTimes` 数组后重跑注册脚本。
 - 要改签到逻辑，看 `checkin.js`（主流程）与 `lib/trae.js`、`lib/workbuddy.js`、`lib/token-sources.js`。
 
 </details>
@@ -167,23 +168,29 @@ powershell -ExecutionPolicy Bypass -File .\register-task.ps1
 
 ## 使用教程
 
-1. **确认任务已注册** —— `Get-ScheduledTask -TaskName DailyCheckin`，应看到 4 个每日触发器（09:00 / 13:00 / 17:00 / 21:00），状态 `Ready`。
-2. **立即试跑一次** —— `Start-ScheduledTask -TaskName DailyCheckin`，或在「任务计划程序」里找到 `DailyCheckin` 右键 → 运行。
-3. **看结果** —— `tail -n 30 checkin.log`，日志只记脱敏片段与积分结果，不写明文 token。
-4. **不用管了** —— 之后每天到点自动跑，签到成功即结束，其余次数自动跳过。
+1. **确认任务已注册** —— `Get-ScheduledTask -TaskName DailyCheckin`，应看到 4 个每日触发器（09:00 / 13:00 / 17:00 / 21:00），状态 `Ready`；执行命令应为 `wscript.exe //B //Nologo "…\run-hidden.vbs"`。
+2. **立即试跑一次** —— `Start-ScheduledTask -TaskName DailyCheckin`，或在「任务计划程序」里找到 `DailyCheckin` 右键 → 运行。**屏幕不会有任何反应**（这是正常的：隐藏窗口后台运行）。
+3. **看结果** —— 日志是唯一痕迹：
+   - Git Bash / WSL：`tail -n 30 checkin.log`
+   - PowerShell：`Get-Content .\checkin.log -Tail 30 -Encoding UTF8`
+
+   ⚠️ PowerShell 5.1 的 `Get-Content` 不加 `-Encoding UTF8` 会把日志里的中文读成乱码，别误以为程序坏了。日志只记脱敏片段与积分结果，不写明文 token。
+4. **不用管了** —— 之后每天到点自动在后台跑。**当天任一端签到成功后，后面的时间点会自动跳过**：两端都完成时整轮直接退出，不再重复走一遍签到流程（跨天自动重置）。
+5. **想强制重跑** —— `node checkin.js --force`，忽略「当日已完成」标记。
 
 ```mermaid
 flowchart TD
-    A["计划任务<br/>09/13/17/21 点"] --> B["运行 checkin.js"]
-    B --> C["取 Trae token"]
-    B --> D["取 WorkBuddy token"]
-    C --> E["调 Trae 签到接口"]
-    D --> F["调 WorkBuddy 签到接口"]
-    E --> G["写 checkin.log"]
-    F --> G
-    G --> H{"成功?"}
-    H -->|"是"| I["结束<br/>再跑自动跳过"]
-    H -->|"否"| J["退避重试<br/>最多 10 次 / 8 分钟"]
+    A["计划任务 DailyCheckin<br/>09 / 13 / 17 / 21 点<br/>Hidden = 隐藏"] --> B["run-hidden.vbs<br/>wscript 隐藏窗口启动"]
+    B --> C["checkin.js<br/>（无可见窗口、无交互）"]
+    C --> D{"今天两端都已<br/>签到完成？"}
+    D -->|"是"| E["直接退出<br/>只留一行日志、不发任何请求"]
+    D -->|"否"| F["只跑尚未完成的那一端"]
+    F --> G["取 token → 调签到接口"]
+    G --> H{"成功？"}
+    H -->|"是"| I["写 state/daily-status.json<br/>后续时段自动跳过该端"]
+    H -->|"否"| J["退避重试<br/>最多 10 次 / 8 分钟<br/>下一时段继续补"]
+    I --> K["写 checkin.log"]
+    J --> K
 ```
 
 **配置项**
@@ -193,6 +200,7 @@ flowchart TD
 | 名称 | 类型 | 默认值 | 是否必填 | 作用 |
 | --- | --- | --- | --- | --- |
 | `trae.host` | string | `https://api.trae.cn` | 否 | 签到接口域名；换用其他版本时改这里 |
+| `trae.region` | string | `CN` | 否 | 请求头 `X-User-Region` 的取值 |
 | `trae.storageJson` | string | `""` | 否 | 手动指定客户端 `storage.json` 路径；留空自动探测 |
 | `trae.cloudideStorage` | string | `""` | 否 | 手动指定登录态存储路径；留空自动探测 |
 | `trae.manualToken` | string | `""` | 否 | 手动兜底 token，一般留空（自动取） |
@@ -204,11 +212,85 @@ flowchart TD
 | `workbuddy.uid` | string | `""` | 否 | 留空：自动从 JWT 的 `sub` 解析 |
 | `workbuddy.domain` | string | `""` | 否 | 留空：默认 `www.workbuddy.cn` |
 | `workbuddy.atRestSecretKey` | string | `""` | 否 | 留空：离线解密用的静态主密钥（一般不需要） |
-| `logFile` | string | `checkin.log` | 否 | 日志文件路径 |
 
 **上表所有字段都可以不填。** 只要两端客户端处于登录状态，脚本每次都能自己拿到 token。
 
+> 日志路径固定为项目目录下的 `checkin.log`（超限自动轮转为 `checkin.log.N`），**不支持配置**——启动器 `run-hidden.vbs` 在 node 起不来时也要往同一个文件写错误，做成可配置会让两处不一致。
+
+**环境变量（可选，不进 config.json）**
+
+| 名称 | 默认值 | 作用 |
+| --- | --- | --- |
+| `CHECKIN_WATCHDOG_MS` | `1200000`（20 分钟） | 单次运行的时长上限；超时强制退出并写 `[看门狗]` 日志。排障时可用小值快速验证 |
+| `CHECKIN_LOG_MAX_BYTES` | `1048576`（1 MiB） | 日志轮转阈值；`checkin.log` 超过它即存档为 `checkin.log.N`。排障时可设小值验证轮转 |
+| `WB_ENDPOINT` | `https://www.workbuddy.cn` | WorkBuddy 签到接口端点覆盖（`lib/workbuddy.js` 读取；默认端点变更或需指向 `copilot.tencent.com` 时用） |
+
+## 无感运行与当日跳过
+
+这两个行为是本项目「装完就不用管」的关键，默认配置即生效，无需额外设置。
+
+### 1. 后台隐藏运行，不弹命令提示符
+
+计划任务以「仅在用户登录时运行」（`LogonType=Interactive`）执行时，如果直接跑 `node.exe` 这类控制台程序，Windows 会**弹出命令提示符窗口**。本项目加了一层隐藏启动器解决它：
+
+```text
+计划任务 → wscript.exe //B //Nologo run-hidden.vbs →（隐藏窗口）node checkin.js
+```
+
+- `wscript.exe` 是 GUI 子系统宿主，自身不创建控制台窗口；
+- `run-hidden.vbs` 用 `WshShell.Run(cmd, 0, False)` 启动 node —— `0` = 隐藏窗口，`False` = 不等待，启动器立即退出，node 在后台跑完；
+- 计划任务本身也标了 `Hidden`（不出现在任务计划程序的常规视图里）；
+- 启动器会自动挑选 Node：托管 Node（`%USERPROFILE%\.workbuddy\binaries\…`）→ `C:\Program Files\node\node.exe` → PATH 里的 `node`；
+- 顺带说明：token 兜底抓取 `capture-workbuddy-token.js` 默认就是**无头浏览器**（只有加 `--login` 才可见），所以自动刷新 token 时也不会闪窗口；
+- 启动失败会留痕：`run-hidden.vbs` 在启动前会校验 `checkin.js` 是否存在，失败时往 `checkin.log` 写一行 `[launcher] FAILED to start node: …`（wscript 自身总是返回 0，不留痕就会变成"任务成功但什么都没跑"的静默失败）。
+
+结果：到点在后台静默跑完，**屏幕不会有任何反应**。想确认它跑过，只能看 `checkin.log`。
+
+**代价与补偿（重要）**：隐藏启动器是「立即返回」的，任务会在 0.1 秒内显示为已完成，所以任务层面的
+`MultipleInstances=IgnoreNew`（互斥）与 `ExecutionTimeLimit=PT15M`（运行上限）**都不再生效**。
+这两项能力改由 `checkin.js` 自己兜住，避免静默退化：
+
+| 原先由任务层提供 | 现在的替代实现 |
+| --- | --- |
+| `IgnoreNew` 防止叠跑 | `state/run.lock.json` 单实例锁：锁持有者进程仍在且未超时 → 本轮直接退出并留一行日志；持有者已死或锁已过期 → 自动接管；锁只会被持有者自己释放，不会误删他人锁 |
+| `PT15M` 运行时长上限 | 内置看门狗：超过 `CHECKIN_WATCHDOG_MS`（默认 20 分钟，可用环境变量覆盖）即 `process.exit(2)` 并写一行 `[看门狗] …` 日志，同时释放锁 |
+
+### 2. 当日签到成功后就跳过后续时段
+
+每个时段都重跑一遍没有意义（还会重复请求接口），所以加了当日状态标记：
+
+- 状态文件：`state/daily-status.json`（运行时产物，已在 `.gitignore` 中），按**本机本地日期**记录每一端是否已完成；
+- 任一端签到成功（「签到成功」或「今日已签到（幂等）」这类等价成功都算）→ 该端立即标记完成，**后续时段的触发跳过它**；
+- 两端都完成 → 后续时段**整轮直接退出**，不发任何网络请求，只在日志留一行：
+  `今日签到已完成（WorkBuddy … / Trae …），本轮跳过，不重复签到`；
+- 只完成一端 → 下一时段**只补跑未完成的那一端**，不会让已完成的那端重复签；
+- 失败不落盘 → 失败的那一端下一时段照常重试；
+- 跨天自动重置，第二天 09:00 重新开始；
+- 想忽略标记强制重跑：`node checkin.js --force`。
+
+> 常见误解：看到 13:00 / 17:00 / 21:00 在日志里没有签到记录，会以为「任务没跑」。实际是**故意的**——当天早上已经签完了，后面几次就是跳过。
+
 ## 常见问题 / 排障
+
+**A｜每个时间点都会签到吗？后面的时段怎么没有记录？**
+
+- **不是**，这正是设计目标：**当天任一端签到成功后，后续时段就不再重复签到**。
+- 两端都完成时，后续触发会直接退出，日志里只有一行 `今日签到已完成（…），本轮跳过，不重复签到`。
+- 只有一端成功时，下一时段只补跑失败的那一端。
+- 想强制重跑一次：`node checkin.js --force`（或把 `state/daily-status.json` 删掉，效果相同）。
+
+**B｜到点后屏幕毫无反应，是不是没跑？**
+
+- 是正常的：任务是**隐藏窗口后台运行**，不弹命令提示符、也无任何提示。
+- 唯一的痕迹是日志：`tail -n 30 checkin.log`（PowerShell 用 `Get-Content .\checkin.log -Tail 30 -Encoding UTF8`；**不加 `-Encoding UTF8` 中文会显示成乱码，属读取方式问题而非日志损坏**）；任务级状态用 `Get-ScheduledTaskInfo -TaskName DailyCheckin` 看 `LastRunTime` / `LastTaskResult`（`0` = 正常）。
+- 若 `LastTaskResult` 是 `3221225786`（`0xC000013A`），说明这次进程是被外部终止的（例如注销/关机/被手动结束），不是脚本逻辑错误；下一时段会自动补跑未被标记完成的那一端。
+- **特别注意**：`LastTaskResult=0` 只说明**启动器**正常退出，并不等于 node 真的跑了（wscript 启动后立刻返回）。所以判据要组合看：`LastTaskResult=0` **并且** `checkin.log` 里有本次的新记录，才算真的跑过。若任务显示跑过、但日志一行都没新增，说明启动器没生效（例如 Windows Script Host 被组策略禁用）。
+
+**C｜日志里出现 `[launcher] FAILED to start node` 或 `[看门狗]` 是什么意思？**
+
+- `[launcher] FAILED to start node: …` —— 隐藏启动器没能把 node 拉起来（node 路径不对、`checkin.js` 被移动/改名等）。这一行由 `run-hidden.vbs` 写入（英文），因为 wscript 自身退出码永远是 0，不写日志就会变成静默失败。
+- `[看门狗] 运行超过 N 分钟仍未结束，强制退出（pid …）` —— 本次运行超过了运行时长上限（默认 20 分钟）被强制结束。因为任务层已无法限制运行时长，这是唯一的兜底；出现后请查 `checkin.log` 前几行确认卡在哪一步（大概率是 Trae 频繁 9074）。
+- `[跳过] 已有另一个签到进程在运行（pid …）` —— 上一次还没跑完，本次触发被单实例锁挡下，属正常保护。
 
 **1｜Trae 返回 `9074 当前参与用户太多，请稍后再试`**
 
@@ -235,6 +317,11 @@ flowchart TD
 | **WorkBuddy：`未找到 WorkBuddy token`** | config 与日志都采不到有效 token → 确保桌面端近期登录过，或运行 `node capture-workbuddy-token.js --login`。 |
 | **WorkBuddy：`token 已过期`** | 通常是长期未用桌面端，日志里也是旧 token → 运行 `node capture-workbuddy-token.js --login`，或手动复制 Bearer token。 |
 | **计划任务不触发** | 确认「仅在用户登录时运行」且电脑未关机/注销（休眠不会自动唤醒，`WakeToRun` 未开启）；用「运行」手动验证。 |
+| **到点屏幕无反应** | 正常：隐藏窗口后台运行。查 `checkin.log` 与 `Get-ScheduledTaskInfo -TaskName DailyCheckin`（`LastTaskResult=0` 为正常）。 |
+| **后续时段日志里没有签到记录** | 正常：当天已签完会自动跳过。要强制重跑用 `node checkin.js --force`。 |
+| **`LastTaskResult=3221225786`（`0xC000013A`）** | 该次 node 进程被外部终止（注销 / 关机 / 被手动结束），属环境问题而非脚本错误；日志会停在 `===== 自动签到开始 =====`。下一时段会自动补跑未标记完成的那一端。 |
+| **任务计划程序里找不到 `DailyCheckin`** | 任务已标记 `Hidden`，勾选「显示隐藏的任务」即可；或直接用 `Get-ScheduledTask -TaskName DailyCheckin` 查看。 |
+| **想要回「弹窗口可见」的调试模式** | 直接把任务的执行命令改回 `node.exe …\checkin.js` 即可（会看到控制台窗口，但一切照常工作）。 |
 | **`capture-workbuddy-token.js` 无头抓取失败** | 实测：浏览器 profile 无有效登录态时，无头跑 90 秒仍返回 `no-usable-token`。需先执行一次 `--login` 在可见浏览器里登录。只要平时开着桌面端，日志采集就能持续续期，不必依赖这条兜底。 |
 | **Trae 积分没到账但日志显示成功** | 以客户端内实际余额为准；接口返回 `code=0`（或 `10001` 今日已签到，视为成功）即脚本无责。 |
 
@@ -242,14 +329,14 @@ flowchart TD
 
 ## 兼容性与已知限制
 
-- **宿主最低版本**：Node.js **≥ 18**（依赖内置 `fetch`）；Windows 10 / 11；PowerShell 5.1 或更高。
+- **宿主最低版本**：Node.js **≥ 18**（依赖内置 `fetch`；如需 Playwright 兜底抓 token 则需 **≥ 20**）；Windows 10 / 11；PowerShell 5.1 或更高。
 - **平台差异**：macOS / Linux 未适配，需自行把计划任务换成 `cron`；Trae 国际版等默认 `host` 不匹配，需自行修改。
 - **冲突**：同名计划任务 `DailyCheckin` 会被 `register-task.ps1` **先注销再重建**（不会出现两个任务）；与 Trae / WorkBuddy 客户端本身无冲突；脚本对 `storage.json` 只读，不改动客户端任何文件。
 
 ## 升级、卸载与数据
 
-- **配置存放位置**：全部在项目目录内——`config.json`（含 token，⚠️ 勿分享）、`trae-token.json`（token 缓存）、`checkin.log`（运行日志）。仓库的 `.gitignore` 已排除这些文件。
-- **升级**：`git pull` 后重跑一次 `register-task.ps1` 即可（任务里的路径不变时其实也不必重跑）。
+- **配置存放位置**：全部在项目目录内——`config.json`（含 token，⚠️ 勿分享）、`trae-token.json`（token 缓存）、`checkin.log`（运行日志）、`state/daily-status.json`（当日签到状态，删掉无副作用，效果等于强制重跑一次）。仓库的 `.gitignore` 已排除这些文件。
+- **升级**：`git pull` 后重跑一次 `register-task.ps1` 即可（任务里的路径不变时其实也不必重跑）。旧版本若把任务直接指向 `node.exe`，需要重跑一次注册脚本才会切到隐藏启动器。
 - **干净卸载**：
   ```powershell
   Unregister-ScheduledTask -TaskName DailyCheckin -Confirm:$false
@@ -281,21 +368,29 @@ flowchart TD
 
 **token 选取策略（两端都是「多来源 + 挑最优」）**
 
-Trae：客户端登录态（≈13.8 天，自动刷新） > `config.trae.manualToken` > `trae-token.json` 缓存。
-WorkBuddy：本机客户端日志（取有效期最长） > `config.workbuddy.accessToken` > 浏览器会话抓取（`capture-workbuddy-token.js`，最后手段）。
+共同规则：**按 JWT 的 `exp` 取有效期最长者**。来源之间的「优先级」只在两个候选 `exp` 相同时用作决胜，不存在"某个来源永远压过另一个"。
+
+- **Trae**（`lib/trae.js` 的 `resolveTokenInfo`）：客户端登录态（≈13.8 天，客户端自动刷新）/ `config.trae.manualToken` / `trae-token.json` 缓存 三者中取 `exp` 最大者；`exp` 相同时 `manualToken` > 客户端登录态 > 缓存文件。
+- **WorkBuddy**（`lib/workbuddy.js` 的 `resolveCredentials`）：`config.workbuddy.accessToken` 与本机客户端日志采集（`lib/token-sources.js`）合并后取 `exp` 最大者；两者都拿不到有效 token 时，才由 `capture-workbuddy-token.js` 走浏览器兜底（内部以 `--force` 强制重抓）。
 
 > 实测对比：客户端登录态 token ≈ **13.8 天**，远长于网页会话 token 的 **~8 小时**——这就是「从客户端读」能撑起无人值守的原因。
 
 **数据流**
 
 ```
-计划任务 → checkin.js
+计划任务（Hidden）→ wscript.exe //B //Nologo run-hidden.vbs →（隐藏窗口）checkin.js
+  ├─ 抢 state/run.lock.json 单实例锁（抢不到 → 直接退出；取代任务层 IgnoreNew）
+  ├─ 启动看门狗（默认 20 分钟；取代任务层 ExecutionTimeLimit）
+  ├─ 读 state/daily-status.json：当天已完成的端直接跳过（两端都完成则整轮退出）
   ├─ lib/token-sources.js 采集 token（多来源，挑有效期最长）
   ├─ lib/workbuddy.js     → POST /v2/billing/meter/daily-checkin
   └─ lib/trae.js          → claim 接口（配 x-device-id = aha ID）
         ↑ 失败 9074 时退避重试（最多 10 次 / 8 分钟）
-  → 写 checkin.log
+  → 任一端成功即写 state/daily-status.json（后续时段自动跳过该端）
+  → 释放锁 → 写 checkin.log
 ```
+
+**无窗口是怎么做到的**：`WshShell.Run(cmd, 0, False)` 的第二参 `0` 即 `SW_HIDE`，第三参 `False` 表示不等子进程退出；配合 `wscript.exe`（GUI 子系统，本身不创建控制台）即可实现「拉起来就没影」。这也是任务里执行的是 `wscript.exe` 而不是 `node.exe` 的原因。
 
 **接口表**
 
@@ -311,26 +406,35 @@ WorkBuddy：本机客户端日志（取有效期最长） > `config.workbuddy.ac
 
 ```text
 auto-checkin/
-├── checkin.js                  # 主程序：依次跑 WorkBuddy、Trae，必要时刷新 token，写日志
+├── checkin.js                  # 主程序：读当日状态 → 跳过已完成端 → 依次跑 WorkBuddy、Trae → 写状态与日志
+├── run-hidden.vbs              # 隐藏窗口启动器（计划任务真正执行的就是它）
 ├── capture-trae-token.js       # Playwright 抓取 Trae 网页会话 token（兜底）
-├── capture-workbuddy-token.js  # Playwright 抓取/刷新 WorkBuddy token（最后手段）
+├── capture-workbuddy-token.js  # Playwright 抓取/刷新 WorkBuddy token（最后手段，默认无头）
 ├── config.json                 # 你的配置（含 token，⚠️ 不要分享）
 ├── config.example.json         # 配置模板
 ├── lib/
 │   ├── trae.js                 # Trae：读客户端登录态 + 解密 + 调签到接口
 │   ├── workbuddy.js            # WorkBuddy：多来源取 token + 调官方签到接口
+│   ├── daily-state.js          # 当日签到状态：决定后续时段是否跳过
 │   └── token-sources.js        # token 采集器：扫描本机日志取最新 JWT
-├── register-task.ps1           # 注册 Windows 计划任务
-└── checkin.log                 # 运行日志
+├── register-task.ps1           # 注册 Windows 计划任务（把任务挂到 run-hidden.vbs）
+├── state/
+│   ├── daily-status.json       # 当日签到状态（运行时产物，已 gitignore）
+│   └── run.lock.json           # 单实例锁（运行时产物，正常结束时自动删除）
+├── docs/architecture.md        # 架构说明：运行链路、设计取舍、自查判据
+├── CONTRIBUTING.md             # 贡献指南：环境、约定、改动验证清单
+├── CHANGELOG.md                # 变更日志
+├── .github/ISSUE_TEMPLATE/     # Bug 报告模板
+└── checkin.log                 # 运行日志（超过 1 MiB 自动轮转为 checkin.log.N）
 ```
 
 </details>
 
-详见 `docs/architecture.md`
+详见 [`docs/architecture.md`](docs/architecture.md)（运行链路、模块职责、关键设计取舍、自查判据与已知限制）
 
 ## 贡献与反馈
 
-[CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) · Issue 模板
+[CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) · [Issue 模板](.github/ISSUE_TEMPLATE/bug_report.md)
 
 改签到接口或计费口径前，请先看 `lib/trae.js`、`lib/workbuddy.js`、`lib/token-sources.js` 里的注释——它们记录了对接官方实现时的实测结论（含两个最容易踩的坑：`x-device-id` 必须用 aha 设备 ID、`10001` 被网关包成 HTTP 400）。
 

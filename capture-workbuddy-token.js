@@ -36,7 +36,8 @@ function log(msg) {
 }
 
 function loadConfig() {
-  return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'));
+  // 剥掉可能的 UTF-8 BOM（记事本另存会加），否则 JSON.parse 会失败
+  return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8').replace(/^\uFEFF/, ''));
 }
 
 function saveConfig(cfg) {
