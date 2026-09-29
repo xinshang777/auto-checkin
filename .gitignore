@@ -1,0 +1,11 @@
+node_modules/
+trae-token.json
+config.json
+checkin.log
+*.log
+npm-install.log
+capture.log
+.wb-browser-profile/
+_wb_capture_state.json
+# 计划任务定义备份（含本机 SID 与绝对路径，仅供本机重建用）
+DailyCheckin.backup.xml

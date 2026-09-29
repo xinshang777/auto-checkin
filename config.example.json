@@ -1,0 +1,20 @@
+{
+  "trae": {
+    "host": "https://api.trae.cn",
+    "storageJson": "",
+    "cloudideStorage": "",
+    "manualToken": "",
+    "tokenFile": "trae-token.json",
+    "maxRetry": 10,
+    "minWait": 15000,
+    "maxWait": 30000,
+    "deadlineMs": 480000
+  },
+  "workbuddy": {
+    "accessToken": "可选（基线）。脚本会优先从本机客户端日志自动采集最新 token；此处可粘贴浏览器复制的 Bearer token 作为兜底，形如 eyJhbGci... 的 JWT。可留空。",
+    "uid": "可选，留空即可：脚本会从 token 的 sub 字段或 workbuddy-desktop.info 的 account.uid 自动解析",
+    "domain": "",
+    "atRestSecretKey": "留空即可；若你拿到离线解密所需的静态主密钥可填这里"
+  },
+  "logFile": "checkin.log"
+}
