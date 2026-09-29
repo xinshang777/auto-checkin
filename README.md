@@ -1,84 +1,52 @@
-<div align="center">
+# auto-checkin ![version](https://img.shields.io/badge/version-1.0.0-blue) ![host](https://img.shields.io/badge/Node-%E2%89%A518%20%7C%20Windows%2010%2F11-339933) ![license](https://img.shields.io/badge/license-%E6%9C%AA%E6%8C%87%E5%AE%9A-lightgrey)
 
-# auto-checkin
+> 一句话定位：它把你每天要手动点的 **Trae CN + WorkBuddy** 签到，变成开机后自动跑完的 Windows 计划任务——给天天用这两个工具、又总忘记签到的人用。
 
-**每天早上自动帮你把两个 AI 工具的每日积分领了。**
-支持 **Trae CN** 与 **WorkBuddy**，每天定时跑 4 次，领到就停、不重复领。
+![改造前 / 改造后](https://raw.githubusercontent.com/xinshang777/auto-checkin/main/docs/before-after.gif)
 
-[![Platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D4)](#三安装与部署)
-[![Node](https://img.shields.io/badge/node-%E2%89%A518-339933)](https://nodejs.org)
-[![Dependencies](https://img.shields.io/badge/runtime%20deps-0-brightgreen)](#五实现原理)
+| 项 | 改造前 | 改造后 |
+| --- | --- | --- |
+| 签到动作 | 打开客户端 → 找到签到入口 → 点一下，两个平台各来一遍 | 什么都不用做，脚本替你点 |
+| 触发方式 | 全靠你记得 | Windows 计划任务：每天 09:00 / 13:00 / 17:00 / 21:00 |
+| 忘记的后果 | 当天签到作废，第二天清零重来 | 4 个时间点覆盖主要开机时段，错过还会补跑 |
+| 登录态 | 客户端得一直保持登录 | 脚本自动从本机客户端登录态取 token，客户端会自行续期 |
+| 重复领取 | 手点可能点重 | 幂等：当天成功后其余次数直接跳过 |
+| 运行依赖 | — | 签到逻辑零 npm 依赖，只用 Node 内置 `crypto` / `fetch` |
+| 可观测 | 签没签上全凭印象 | `checkin.log` 记录脱敏片段 + 积分结果 |
 
-</div>
+## 适合谁 / 不适合谁
 
----
+- 适合：如果你要在 **Windows 10 / 11** 上每天领 **Trae CN** 与 **WorkBuddy** 的每日积分，希望「设一次就不用管」，不介意它每天跑 4 次以覆盖不同开机时段。
+- 不适合：如果你用 **macOS / Linux**（`register-task.ps1` 是 Windows 计划任务脚本，需自行改用 `cron`）；或电脑**经常几天不开机**（那签到本身也就没意义了）；或你用的是 **Trae 国际版 / 其他版本**（默认对接 `api.trae.cn`，需自行改 `host`）——建议改用系统自带的 `cron` + 官方接口脚本自行拼装。
+- 本项目**不做**：不做外挂、不修改客户端、不伪造数据、不做批量或多账号、不做除 Windows 以外的平台适配。
 
-## 先花 30 秒搞懂它是什么
+## 安装
 
-| 名词 | 白话解释 |
-|---|---|
-| **每日签到** | Trae 和 WorkBuddy 都有"每日签到领积分/额度"的活动，**当天不签就作废**，第二天重新开始。 |
-| **痛点** | 需要坚持每天手动点一下。出差、周末、忙起来就忘了，白丢积分。 |
-| **本脚本** | 一个跑在**你自己 Windows 电脑上**的 Node.js 脚本，自动完成这两个签到。 |
+### 前置条件
 
-它**不是**外挂、**不**修改客户端、**不**伪造数据——只是把你本来要手动点的那一下自动化了，
-用的是官方接口 + 你本机的登录态。
+| 项目 | 要求 | 说明 |
+| --- | --- | --- |
+| 操作系统 | Windows 10 / 11 | `register-task.ps1` 依赖 Windows 计划任务 |
+| Node.js | **≥ 18** | 签到逻辑用到内置 `fetch`；可直接用 WorkBuddy 自带的托管 Node |
+| Trae CN 客户端 | 已安装且**处于登录状态** | 脚本从它的 `storage.json` 解密出 token（**只读**） |
+| WorkBuddy 桌面端 | 已安装且**近期登录过** | 可选；缺这一端脚本会自动跳过 |
+| PowerShell | 5.1 或更高 | 注册计划任务用 `Register-ScheduledTask`（**不用** `schtasks.exe`） |
 
----
+### 该选哪种方式
 
-## 一、适用范围（谁该用它）
+| 方式 | 适用场景 | 代价 |
+| --- | --- | --- |
+| AI 提示词一键部署 | 只想用，不想看步骤 | 需要一个能读写本机文件、能执行命令的本机 Agent |
+| `git clone` + 手动命令 | 想自己控制每一步 / 要改源码、提 PR | 需 Node 环境 + 会敲命令 |
+| Download ZIP | 离线环境 / 想锁版本 | 不自动更新，升级要重新下载 |
 
-**适合你，如果：**
+> 本项目**不是宿主插件**，没有 `link:` 一类的安装机制；要调试源码，clone 下来直接 `node checkin.js` 跑即可。
 
-- 你在用 **Windows 10 / 11**；
-- 你同时在用 **Trae CN 客户端**和 **WorkBuddy 桌面端**（用其中一个也可以，另一个会自动跳过）；
-- 你**每天都开电脑**（脚本只在开机且已登录时运行）；
-- 你希望"设一次就不用管"，不介意它每天跑 4 次以覆盖不同开机时段。
-
-**不适合你，如果：**
-
-- 你用 macOS / Linux——`register-task.ps1` 是 Windows 计划任务脚本，需要自行改用 `cron`；
-- 你的电脑**经常几天不开机**（那签到本身也就没意义了）；
-- 你用的是 **Trae 国际版**或其他版本——脚本默认对接 `api.trae.cn`，其他版本需自行改 `host`。
-
-> ⚠️ 本项目是**个人本机自动化**，默认仅用于你自己的账号。请遵守平台服务条款，不要用于批量或商业用途。
-
----
-
-## 二、它能做什么（通俗版）
-
-```mermaid
-flowchart TD
-    A["Windows 计划任务<br/>每天 09:00 / 13:00 / 17:00 / 21:00"] --> B["启动 checkin.js"]
-    B --> C["自动取 Trae token<br/>（读本机客户端登录态）"]
-    B --> D["自动取 WorkBuddy token<br/>（扫本机日志）"]
-    C --> E["调用 Trae 签到接口"]
-    D --> F["调用 WorkBuddy 签到接口"]
-    E --> G["写入 checkin.log"]
-    F --> G
-    G --> H{"成功？"}
-    H -->|"是"| I["结束（下次跑会自动跳过）"]
-    H -->|"否"| J["退避重试<br/>最多 10 次 / 8 分钟"]
-```
-
-**四个关键特性：**
-
-| 特性 | 说明 |
-|---|---|
-| ⏰ **每天 4 次** | `09:00 / 13:00 / 17:00 / 21:00`，覆盖主要开机时段。几点开电脑都能签上。 |
-| 🔁 **错过会补** | 计划任务带 `StartWhenAvailable`——错过某次触发，下次开机自动补跑。 |
-| ✅ **幂等，不重复领** | 任一次成功即完成，其余次数会识别"今日已签到"直接跳过，不会重复领取。 |
-| 🔑 **token 自动获取** | **两端的 token 都能自动拿**，不用你手动抓。详见[第五节](#五实现原理)。 |
-
----
-
-## 三、安装与部署
-
-### 🚀 最省事：把这段提示词发给 AI，让它全自动帮你装好
+<details><summary>方式一：AI 一键部署（推荐，完整步骤）</summary>
 
 **前提只有一个**：你用的 AI 能读写本机文件、能执行命令（WorkBuddy 桌面端、Trae CN、Cursor、Claude Code、Codex 等本机 Agent 都行）。纯网页版聊天机器人没有这些能力，只能给你念步骤。
 
-**用法**：把下面**整段**复制，直接发给 AI，然后等它汇报结果即可。它自己会检查环境、下载项目、跑通签到、注册计划任务并验证。
+**用法**：把下面**整段**复制发给 AI，然后等它汇报结果即可。它自己会检查环境、下载项目、跑通签到、注册计划任务并验证。
 
 ```text
 你是负责帮我在 Windows 电脑上部署一个开源项目的 AI 助手。请直接动手把部署做完，不要只给我步骤、不要让我自己敲命令。每一步都必须真实执行并验证；禁止编造执行结果，某步没做就写明"未执行"并说明原因。
@@ -152,190 +120,194 @@ flowchart TD
 
 > 如果 AI 能直接联网读仓库，你也可以只说一句：**"按 https://github.com/xinshang777/auto-checkin 的 README 里那段 AI 部署提示词，帮我把这个项目部署好。"**
 
----
+</details>
 
-### 手动部署（可选）
-
-下面是从零开始的手动步骤。只有在"AI 装不了"或"你想自己控制每一步"时才需要看。
-
-### 前置条件
-
-| 项 | 要求 |
-|---|---|
-| 操作系统 | Windows 10 / 11 |
-| Node.js | 18 或更高（脚本会用 WorkBuddy 自带的托管 Node，也可用系统 `node`） |
-| Trae CN 客户端 | 已安装且**处于登录状态**（用于自动取 token） |
-| WorkBuddy 桌面端 | 已安装且**近期登录过**（用于自动取 token，可选） |
-
-### 第 1 步：下载项目
+<details><summary>方式二：git clone + 手动部署（改源码 / 提 PR 走这条）</summary>
 
 ```bash
 git clone https://github.com/xinshang777/auto-checkin.git
 cd auto-checkin
-```
-
-> 也可以直接点仓库页面的 **Code → Download ZIP** 解压。
-> 项目目录**可以整体移动到任意位置**，移动后重跑一次注册计划任务的命令即可。
-
-### 第 2 步：安装依赖
-
-```bash
-npm install
-```
-
-> 💡 只有在"**需要 Playwright 自动抓 Trae token**"时才用得上依赖。
-> 纯签到（`checkin.js` + `lib/*`）**零 npm 依赖**，只用 Node 内置的 `crypto` / `fetch`。
-> 想跳过浏览器下载，用：
-> ```bash
-> PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm install
-> npm run install-browser    # 需要抓 token 时再执行
-> ```
-
-### 第 3 步：写配置
-
-```bash
-cp config.example.json config.json
-```
-
-然后编辑 `config.json`。**绝大多数人只需要动这里，甚至可以一个字段都不填**：
-
-```jsonc
-{
-  "trae": {
-    "host": "https://api.trae.cn",   // 签到接口域名
-    "manualToken": "",               // 一般留空：脚本会自动取
-    "tokenFile": "trae-token.json"   // token 缓存文件
-  },
-  "workbuddy": {
-    "accessToken": "",               // 一般留空：脚本会从本机日志自动取
-    "uid": ""                        // 一般留空：脚本会从 token 里解析
-  },
-  "logFile": "checkin.log"
-}
-```
-
-**为什么可以留空？** 因为脚本会自动从你本机客户端的登录态里取 token：
-
-- **Trae**：从 Trae CN 客户端的 `storage.json` 解密出登录 token（约 14 天有效，客户端会自动刷新）；
-- **WorkBuddy**：扫描桌面端日志，挑出**有效期最长**的那个 JWT。
-
-**只要你的客户端是登录状态，脚本每次都能自动拿到新 token——你不需要做任何事。**
-
-### 第 4 步：先手动跑一次（验证配置）
-
-```bash
-npm run checkin
-```
-
-或者直接用托管 Node：
-
-```bash
-"%USERPROFILE%\.workbuddy\binaries\node\versions\22.22.2-3\node.exe" checkin.js
-```
-
-看到下面任意一种输出就算成功：
-
-```
-WorkBuddy 签到成功
-WorkBuddy 今日已签到（幂等）
-Trae 签到成功
-```
-
-### 第 5 步：注册成计划任务（每天自动跑）
-
-在 **PowerShell** 里运行（脚本会先注销同名旧任务再重建）：
-
-```powershell
+cp config.example.json config.json      # token 字段留空即可
+node checkin.js                         # 先手动跑一次，看到"签到成功"再往下
 powershell -ExecutionPolicy Bypass -File .\register-task.ps1
 ```
 
-> ⚠️ `register-task.ps1` 含中文，**必须是 UTF-8 with BOM** 编码保存，
-> 否则 Windows PowerShell 5.1 会按 GBK 解析并报语法错误。
+- 项目目录**可以整体移动**到任意位置，移动后重跑一次注册脚本即可（任务里记录的是绝对路径）。
+- 想用 WorkBuddy 自带托管 Node：`"%USERPROFILE%\.workbuddy\binaries\node\versions\22.22.2-3\node.exe" checkin.js`。
+- 改签到时间：编辑 `register-task.ps1` 里的 `$triggers` 数组后重跑注册脚本。
+- 要改签到逻辑，看 `checkin.js`（主流程）与 `lib/trae.js`、`lib/workbuddy.js`、`lib/token-sources.js`。
 
-注册完成后任务名为 **`DailyCheckin`**，包含 4 个每日触发器：`09:00 / 13:00 / 17:00 / 21:00`。
+</details>
 
-**任务设置**（脚本已内置）：
+<details><summary>方式三：Download ZIP（离线 / 锁版本）</summary>
 
-- 仅在**用户登录后**运行（便于读取本机客户端登录态）
-- 允许电池下启动、不因切换到电池而中止
-- **错过触发后开机补跑**（`StartWhenAvailable`）
-- 仅在**有网络**时运行
-- 单次执行时限 15 分钟，失败重启 2 次（间隔 2 分钟）
+1. 打开仓库页面 → **Code → Download ZIP**，解压到任意目录；
+2. `cp config.example.json config.json`，token 字段留空；
+3. 用 Node ≥ 18 跑 `node checkin.js`，确认输出成功；
+4. PowerShell 执行 `powershell -ExecutionPolicy Bypass -File .\register-task.ps1`。
 
----
+⚠️ 两点注意：ZIP 解压后的 `register-task.ps1` 必须保持 **UTF-8 with BOM**，否则 PowerShell 5.1 按 GBK 解析会报语法错误；此方式不会自动更新，升级要重新下载。
 
-## 四、使用教程
+</details>
 
-### 查看任务状态
+### 重启说明
 
-```powershell
-Get-ScheduledTask -TaskName DailyCheckin
+| 场景 | 是否需要重启 |
+| --- | --- |
+| 刚部署完、注册了计划任务 | 不需要重启电脑，任务即刻生效 |
+| 改了 `config.json` | 不需要，下次触发即生效 |
+| 改了 `checkin.js` / `lib/*` | 不需要 |
+| 改了 `register-task.ps1` 的时间数组 | 不需要重启，但要**重跑一次注册脚本** |
+| 刚登录 Trae CN / WorkBuddy 客户端 | 不需要，token 每次运行时现取 |
+| 电脑注销 / 关机 | 计划任务不会跑；下次开机登录后靠 `StartWhenAvailable` 补跑 |
+
+### 三十秒验证成功
+
+在项目目录打开 PowerShell，执行 `node checkin.js` → 看到 `WorkBuddy 签到成功` 或 `WorkBuddy 今日已签到（幂等）` 或 `Trae 签到成功` = **装好了**。
+
+## 使用教程
+
+1. **确认任务已注册** —— `Get-ScheduledTask -TaskName DailyCheckin`，应看到 4 个每日触发器（09:00 / 13:00 / 17:00 / 21:00），状态 `Ready`。
+2. **立即试跑一次** —— `Start-ScheduledTask -TaskName DailyCheckin`，或在「任务计划程序」里找到 `DailyCheckin` 右键 → 运行。
+3. **看结果** —— `tail -n 30 checkin.log`，日志只记脱敏片段与积分结果，不写明文 token。
+4. **不用管了** —— 之后每天到点自动跑，签到成功即结束，其余次数自动跳过。
+
+```mermaid
+flowchart TD
+    A["计划任务<br/>09/13/17/21 点"] --> B["运行 checkin.js"]
+    B --> C["取 Trae token"]
+    B --> D["取 WorkBuddy token"]
+    C --> E["调 Trae 签到接口"]
+    D --> F["调 WorkBuddy 签到接口"]
+    E --> G["写 checkin.log"]
+    F --> G
+    G --> H{"成功?"}
+    H -->|"是"| I["结束<br/>再跑自动跳过"]
+    H -->|"否"| J["退避重试<br/>最多 10 次 / 8 分钟"]
 ```
 
-### 立即测试一次
+**配置项**
 
-```powershell
-Start-ScheduledTask -TaskName DailyCheckin
-```
+配置写在项目目录的 `config.json`（从 `config.example.json` 复制而来）。字段与默认值如下：
 
-或者直接在"任务计划程序"里找到 `DailyCheckin` 右键 → **运行**。
+| 名称 | 类型 | 默认值 | 是否必填 | 作用 |
+| --- | --- | --- | --- | --- |
+| `trae.host` | string | `https://api.trae.cn` | 否 | 签到接口域名；换用其他版本时改这里 |
+| `trae.storageJson` | string | `""` | 否 | 手动指定客户端 `storage.json` 路径；留空自动探测 |
+| `trae.cloudideStorage` | string | `""` | 否 | 手动指定登录态存储路径；留空自动探测 |
+| `trae.manualToken` | string | `""` | 否 | 手动兜底 token，一般留空（自动取） |
+| `trae.tokenFile` | string | `trae-token.json` | 否 | 抓取到的 token 缓存文件 |
+| `trae.maxRetry` | number | `10` | 否 | Trae 限流时的最大重试次数 |
+| `trae.minWait` / `trae.maxWait` | number | `15000` / `30000` | 否 | 退避等待区间（毫秒） |
+| `trae.deadlineMs` | number | `480000` | 否 | 单次运行的重试总时限（8 分钟） |
+| `workbuddy.accessToken` | string | `""` | 否 | 基线兜底 token，一般留空（自动扫本机日志采集） |
+| `workbuddy.uid` | string | `""` | 否 | 留空：自动从 JWT 的 `sub` 解析 |
+| `workbuddy.domain` | string | `""` | 否 | 留空：默认 `www.workbuddy.cn` |
+| `workbuddy.atRestSecretKey` | string | `""` | 否 | 留空：离线解密用的静态主密钥（一般不需要） |
+| `logFile` | string | `checkin.log` | 否 | 日志文件路径 |
 
-### 查看运行结果
+**上表所有字段都可以不填。** 只要两端客户端处于登录状态，脚本每次都能自己拿到 token。
 
-打开项目目录下的 `checkin.log`：
+## 常见问题 / 排障
 
-```bash
-# 看最后 30 行
-tail -n 30 checkin.log
-```
+**1｜Trae 返回 `9074 当前参与用户太多，请稍后再试`**
 
-日志只记录**脱敏片段**与积分结果，**不会**写入明文 token。
+- **原因**：两种可能。① 真实高峰限流——脚本已内置退避重试（最多 10 次 / 8 分钟），通常自己会好；② **`x-device-id` 用错了**——早期脚本误用 `telemetry.devDeviceId`，而客户端实际用的是 `storage.json` 里键名 `iCubeAuthInfo://icube-dc:<数字ID>` 中的 **aha 设备 ID**。
+- **处理**：脚本自 2026-09-29 起已自动提取 aha ID，并在缺失时直接打印警告。若仍持续 9074，先确认 `x-device-id` 是否等于 `storage.json` 中 `iCubeAuthInfo://icube-dc:<id>` 的数字 ID，再重跑。注意 `status` 接口不校验设备 ID、只有 `claim` 校验，所以典型现象是「查询一切正常，领取永远失败」。
 
-### 改签到时间
+**2｜`未找到 Trae token` / `未找到 WorkBuddy token`**
 
-编辑 `register-task.ps1` 里的时间数组，然后重新注册：
+- **原因**：客户端没登录，或本机没有可用的 token 缓存/日志。
+- **处理**：打开对应的客户端**登录一次**，然后重跑。仍不行再用[使用教程](#使用教程)的手动兜底：Trae 从浏览器 `Local Storage` 的 `Cloud-IDE-Token` 复制；WorkBuddy 从 `Authorization: Bearer eyJhbGci...` 复制 `Bearer ` 之后的部分，填进 `config.json` 的 `workbuddy.accessToken`。
 
-```powershell
-# register-task.ps1 内部（可自行修改）
-$triggers = @('09:00','13:00','17:00','21:00') |
-  ForEach-Object { New-ScheduledTaskTrigger -Daily -At $_ }
-```
+**3｜`register-task.ps1` 报语法错误**
 
-改完重跑第 5 步的命令即可。
+- **原因**：文件含中文，被以非 BOM 编码保存后，Windows PowerShell 5.1 按 GBK 解析导致乱码报错。
+- **处理**：把 `register-task.ps1` 按 **UTF-8 with BOM** 重新保存，再执行一次即可。
 
-### 兜底：手动提供 token（自动获取失败时）
+<details><summary>完整排障表</summary>
 
-**Trae**——两种方式任选：
+| 现象 | 处理 |
+| --- | --- |
+| **Trae：`9074`** | 真实限流（已自动退避重试）或 `x-device-id` 与 token 不匹配。脚本已自动取 aha 设备 ID；仍持续则按上面第 1 条排查。 |
+| **Trae：`9004`** | token / device-id 不正确 → 确认 Trae CN 客户端处于登录状态，或用 `manualToken` 兜底。 |
+| **Trae：`未找到 Trae token`** | 客户端未登录且无缓存 → 打开客户端登录一次，或手动提供 token。 |
+| **WorkBuddy：`未找到 WorkBuddy token`** | config 与日志都采不到有效 token → 确保桌面端近期登录过，或运行 `node capture-workbuddy-token.js --login`。 |
+| **WorkBuddy：`token 已过期`** | 通常是长期未用桌面端，日志里也是旧 token → 运行 `node capture-workbuddy-token.js --login`，或手动复制 Bearer token。 |
+| **计划任务不触发** | 确认「仅在用户登录时运行」且电脑未关机/注销（休眠不会自动唤醒，`WakeToRun` 未开启）；用「运行」手动验证。 |
+| **`capture-workbuddy-token.js` 无头抓取失败** | 实测：浏览器 profile 无有效登录态时，无头跑 90 秒仍返回 `no-usable-token`。需先执行一次 `--login` 在可见浏览器里登录。只要平时开着桌面端，日志采集就能持续续期，不必依赖这条兜底。 |
+| **Trae 积分没到账但日志显示成功** | 以客户端内实际余额为准；接口返回 `code=0`（或 `10001` 今日已签到，视为成功）即脚本无责。 |
 
-- **方式 A：浏览器 F12 复制**
-  1. 用 Edge / Chrome 打开 `https://www.trae.cn` 并登录；
-  2. `F12` → `Application` → 左侧 `Local Storage` → 找到键 **`Cloud-IDE-Token`**；
-  3. 复制其值（`eyJhbGci...` 长串），粘贴到 `config.json` 的 `trae.manualToken`。
+</details>
 
-- **方式 B：Playwright 自动抓取**
-  ```bash
-  npm run capture     # 打开浏览器登录一次，会写入 trae-token.json
+## 兼容性与已知限制
+
+- **宿主最低版本**：Node.js **≥ 18**（依赖内置 `fetch`）；Windows 10 / 11；PowerShell 5.1 或更高。
+- **平台差异**：macOS / Linux 未适配，需自行把计划任务换成 `cron`；Trae 国际版等默认 `host` 不匹配，需自行修改。
+- **冲突**：同名计划任务 `DailyCheckin` 会被 `register-task.ps1` **先注销再重建**（不会出现两个任务）；与 Trae / WorkBuddy 客户端本身无冲突；脚本对 `storage.json` 只读，不改动客户端任何文件。
+
+## 升级、卸载与数据
+
+- **配置存放位置**：全部在项目目录内——`config.json`（含 token，⚠️ 勿分享）、`trae-token.json`（token 缓存）、`checkin.log`（运行日志）。仓库的 `.gitignore` 已排除这些文件。
+- **升级**：`git pull` 后重跑一次 `register-task.ps1` 即可（任务里的路径不变时其实也不必重跑）。
+- **干净卸载**：
+  ```powershell
+  Unregister-ScheduledTask -TaskName DailyCheckin -Confirm:$false
   ```
+  然后删除项目目录即可；脚本不在注册表、系统目录等处留任何残留。
+- **回滚**：`git checkout <上一个 tag / commit>` 后重跑注册脚本；配置与日志不受影响。
 
-**WorkBuddy**——推荐方式：
+## 隐私
 
-1. 用 Edge / Chrome 打开 `https://www.workbuddy.cn` 并登录；
-2. `F12` → **Network（网络）** → 刷新页面；
-3. 随便点一条发往 `www.workbuddy.cn` 的请求，在请求头里找到 `Authorization: Bearer eyJhbGci...`；
-4. 复制 `Bearer ` **后面**那整串（不含 `Bearer ` 本身）；
-5. 粘贴到 `config.json` 的 `workbuddy.accessToken`。
+- **数据是否出本机**：不出。除了发给官方签到接口的必要请求，不上传任何内容到第三方。
+- **是否联网**：是，但只连两个域名——`api.trae.cn`（Trae）与 `www.workbuddy.cn`（WorkBuddy）。
+- **是否读取账号**：读取**本机客户端的登录态文件**（Trae 的 `storage.json` 只读解密、WorkBuddy 的本地日志扫描），这是它自动拿到 token 的唯一途径；**不修改**这些文件，**不**上传到任何地方。
+- **日志**：只记录脱敏片段与积分结果，**不写明文 token**。
+- 使用「AI 一键部署」提示词时，请只发给**你信任的本机 Agent**；提示词已要求 AI 不回显完整 token，但部署后建议自己花 10 秒确认 `config.json` 没被提交到仓库（`git status` 应看不到它）。
 
-> 📌 **`uid` 可以留空**：脚本会自动从 token（JWT 的 `sub` 字段）里解析出来。
+## 实现原理（贡献者向）
 
-### 关掉某个平台的签到
+<details><summary>挂钩点 · 数据流 · 接口表 · 目录结构</summary>
 
-如果你不用 Trae 或不用 WorkBuddy，脚本会**自动跳过**拿不到 token 的那一端，无需额外配置。
+**挂钩点（无侵入）**
 
----
+本项目的「挂钩」不是代码注入，而是**信息采集**，共三处，全部只读：
 
-## 五、实现原理
+| 挂钩点 | 读取内容 | 用途 |
+| --- | --- | --- |
+| Trae `storage.json` 的 `iCubeAuthInfo://icube.cloudide` | AES-128-CBC + SHA-512 派生的加密登录态（"tc" 格式） | 解出 Trae token（约 14 天有效，客户端自动刷新） |
+| Trae `storage.json` 的**键名** `iCubeAuthInfo://icube-dc:<id>` | aha 设备 ID | 作为 `x-device-id`，缺失会导致 9074 |
+| WorkBuddy 桌面端日志 | 落盘的 JWT（`%USERPROFILE%\.workbuddy\logs`、`%LOCALAPPDATA%\CodeBuddyExtension\Logs`） | 取有效期最长的 token（约 55 天） |
 
-### 1. 整体结构
+**token 选取策略（两端都是「多来源 + 挑最优」）**
+
+Trae：客户端登录态（≈13.8 天，自动刷新） > `config.trae.manualToken` > `trae-token.json` 缓存。
+WorkBuddy：本机客户端日志（取有效期最长） > `config.workbuddy.accessToken` > 浏览器会话抓取（`capture-workbuddy-token.js`，最后手段）。
+
+> 实测对比：客户端登录态 token ≈ **13.8 天**，远长于网页会话 token 的 **~8 小时**——这就是「从客户端读」能撑起无人值守的原因。
+
+**数据流**
+
+```
+计划任务 → checkin.js
+  ├─ lib/token-sources.js 采集 token（多来源，挑有效期最长）
+  ├─ lib/workbuddy.js     → POST /v2/billing/meter/daily-checkin
+  └─ lib/trae.js          → claim 接口（配 x-device-id = aha ID）
+        ↑ 失败 9074 时退避重试（最多 10 次 / 8 分钟）
+  → 写 checkin.log
+```
+
+**接口表**
+
+| 用途 | 接口 | 鉴权 |
+| --- | --- | --- |
+| WorkBuddy 状态查询 | `POST https://www.workbuddy.cn/v2/billing/meter/checkin-activity-status` | `Authorization: Bearer <token>` + `X-User-Id: <uid>` |
+| WorkBuddy 执行签到 | `POST https://www.workbuddy.cn/v2/billing/meter/daily-checkin` | 同上 |
+| Trae 签到 | `api.trae.cn` claim 接口 | `Authorization: Cloud-IDE-JWT <token>`、`x-device-id`、`X-User-Region`（默认 `CN`）、`x-app-version`、`x-device-type`、`x-device-brand`、`x-os-version`；请求体 `{"req_source": 1}`（**不能发空 body**） |
+
+**幂等判定**：`daily-checkin` 返回 `code=0` 为成功；`code=10001`（今日已签到）**一律视为成功**。注意网关会把 `10001` 包成 **HTTP 400**，所以必须按**响应体的 `code`** 判断，不能看 HTTP 状态码。
+
+**目录结构**
 
 ```text
 auto-checkin/
@@ -352,140 +324,16 @@ auto-checkin/
 └── checkin.log                 # 运行日志
 ```
 
-### 2. token 是怎么"自动拿到"的
+</details>
 
-这是本项目最核心的部分。**两端都是"多来源 + 挑最优"**：
+详见 `docs/architecture.md`
 
-#### Trae：从客户端登录态解密
+## 贡献与反馈
 
-Trae 签到接口需要两个头：
+[CONTRIBUTING.md](CONTRIBUTING.md) · [CHANGELOG.md](CHANGELOG.md) · Issue 模板
 
-```
-Authorization: Cloud-IDE-JWT <token>
-x-device-id: <deviceId>
-```
+改签到接口或计费口径前，请先看 `lib/trae.js`、`lib/workbuddy.js`、`lib/token-sources.js` 里的注释——它们记录了对接官方实现时的实测结论（含两个最容易踩的坑：`x-device-id` 必须用 aha 设备 ID、`10001` 被网关包成 HTTP 400）。
 
-脚本按 **"有效期最长优先"** 选取 token：
+## 许可证
 
-| 优先级 | 来源 | 说明 |
-|---|---|---|
-| 1 | 本机 Trae CN 客户端的 `storage.json` | 键 `iCubeAuthInfo://icube.cloudide` 是加密登录态，解密后得到 token，**约 14 天有效**，且**客户端会自动刷新** |
-| 2 | `config.trae.manualToken` | 手动配置，若有效期更长则优先 |
-| 3 | `trae-token.json` | 历史抓取的缓存（兜底） |
-
-**解密算法**：AES-128-CBC + SHA-512 密钥派生（"tc" 格式），已在真实客户端 `storage.json` 上实测验证。
-
-> 实测对比：客户端登录态 token ≈ **13.8 天**有效，远长于网页会话 token 的 **~8 小时**——
-> 这就是为什么"从客户端读"能撑起无人值守，而"从网页抓"只适合当兜底。
-
-#### WorkBuddy：扫描本机日志
-
-WorkBuddy 的 accessToken 是 **55 天有效期**的 JWT。脚本按下面的优先级自动挑最新可用的：
-
-| 优先级 | 来源 | 说明 |
-|---|---|---|
-| 1 | **本机客户端日志** | 桌面端运行时会把它当前有效的 token 写进本地日志，续期后新 token 也会落盘。脚本每次扫描下列目录并取**有效期最长**的一个：<br>`%USERPROFILE%\.workbuddy\logs`（iss=`www.workbuddy.cn`）<br>`%LOCALAPPDATA%\CodeBuddyExtension\Logs`（iss=`www.codebuddy.cn`，同账号可用） |
-| 2 | `config.json` 的 `accessToken` | 基线兜底 |
-| 3 | **浏览器会话抓取** | 最后手段：`node capture-workbuddy-token.js --login`（登录一次后，之后无头自动刷新）。`checkin.js` 检测到无有效 token 时也会**自动调用**它 |
-
-> 结论：**只要你平时在用 WorkBuddy 桌面端**，脚本就能自动"捡"到它续期后的新 token，基本无需手动干预。
-
-### 3. 调用的接口
-
-**WorkBuddy**（逆向自桌面端 `app.asar`，已可直接调用，**不需要抓包**）：
-
-| 用途 | 接口 | 鉴权 |
-|---|---|---|
-| 状态查询 | `POST https://www.workbuddy.cn/v2/billing/meter/checkin-activity-status` | `Authorization: Bearer <token>` + `X-User-Id: <uid>` |
-| 执行签到 | `POST https://www.workbuddy.cn/v2/billing/meter/daily-checkin` | 同上 |
-
-**幂等判定**：`daily-checkin` 返回 `code=0` 视为成功；返回 `code=10001`（今日已签到）**一律视为成功**。
-注意网关会把 `10001` 包成 **HTTP 400**，所以脚本按**响应体的 `code`** 判断，不会误判成失败。
-
-**Trae**：请求头/请求体已按客户端实现完整对齐：
-
-- 请求头：`Authorization: Cloud-IDE-JWT <token>`、`x-device-id`、`X-User-Region`（默认 `CN`）、
-  `x-app-version`（取自 `iCubeLastVersion`）、`x-device-type`、`x-device-brand`、`x-os-version`
-- 请求体：`{"req_source": 1}`（IDE 客户端为 1，Lite 为 2）——**不能发空 body**
-
-### 4. ⚠️ 最深的坑：`x-device-id` 必须用「aha 设备 ID」
-
-这是**最容易踩、最难查**的一个坑，值得单独讲清楚：
-
-Trae 桌面端（Electron）实际发请求时，用的是 **aha 设备服务注册的设备 ID**，
-而**不是** `storage.json` 里的 `telemetry.devDeviceId`。两者是完全不同的值：
-
-| 字段 | 能否用于签到 |
-|---|---|
-| `telemetry.devDeviceId`（早期脚本误用） | ❌ 返回 `9074` |
-| **aha 设备 ID**（客户端实际使用） | ✅ 正常领取 |
-
-aha 设备 ID 就藏在 `storage.json` 的**键名**里：
-
-```
-iCubeAuthInfo://icube-dc:<数字ID>
-                     ↑ 这一段就是 aha 设备 ID
-```
-
-脚本已自动从键名提取（`lib/trae.js` 的 `findAhaDeviceId()`），**无需手工配置**。
-
-**为什么这个坑特别难查**：设备 ID 错误时，服务端返回的是
-`9074 当前参与用户太多，请稍后再试`——看起来**完全像高峰限流**，会让人以为"就是抢不到"。
-而 `status` 接口**不校验**设备 ID，只有 `claim`（领取）接口校验，
-所以现象是**"查询一切正常，领取永远失败"**。
-
-> 自 2026-09-29 起，`lib/trae.js` 在 aha ID 缺失时会**直接打印警告**并说明该 ID 会导致 9074，
-> 这一步无需再手工排查。
->
-> 若日后再次出现"一直 9074"：**第一件事**是确认 `x-device-id` 是否等于
-> `storage.json` 中 `iCubeAuthInfo://icube-dc:<id>` 的数字 ID。
-
-### 5. 重试与退避
-
-Trae 的高峰限流（9074）需要重试窗口：
-
-| 配置项 | 默认 | 说明 |
-|---|---|---|
-| `maxRetry` | `10` | 最大重试次数 |
-| `minWait` / `maxWait` | `15000` / `30000` | 退避等待区间（毫秒） |
-| `deadlineMs` | `480000` | 单次运行总时限（8 分钟），到点停止重试 |
-
-计划任务单次时限设为 15 分钟，给 8 分钟的重试窗口留足余量。
-
-> 早期版本把签到排成夜间 `23:00–23:50` 共 6 次，就是为了给 9074 留重试窗口。
-> 2026-09-28 修掉 9074 根因后已无必要，精简为现在的 4 次。
-
----
-
-## 六、排障
-
-| 现象 | 处理 |
-|---|---|
-| **Trae：`9074`** | **两种成因**：① 真实高峰限流（服务端行为，脚本已自动退避重试）；② **`x-device-id` 与 token 不匹配**——用错了 `telemetry.devDeviceId` 而非 aha 设备 ID。脚本已按客户端实现自动取 aha ID；若仍持续 9074，按[第五节](#4-️最深的坑x-device-id-必须用aha-设备-id)排查。 |
-| **Trae：`9004`** | token / device-id 不正确 → 确认 **Trae CN 客户端处于登录状态**（脚本会自动取它维护的 token）；或用 `manualToken` 兜底。 |
-| **Trae：`未找到 Trae token`** | 客户端未登录且无缓存 → 打开 Trae CN 客户端登录一次，或按第四节兜底提供 token。 |
-| **WorkBuddy：`未找到 WorkBuddy token`** | config 与日志都采集不到有效 token → 确保桌面端近期登录过；或运行 `node capture-workbuddy-token.js --login` 登录一次；或手动粘贴。 |
-| **WorkBuddy：`token 已过期`** | 通常是长期未用桌面端，导致日志里也是旧 token → 运行 `node capture-workbuddy-token.js --login`，或手动复制 Bearer token。 |
-| **计划任务不触发** | 确认"仅在用户登录时运行"且电脑未关机/注销（休眠不会自动唤醒，`WakeToRun` 未开启）；用"运行"手动验证。4 个触发点已覆盖主要开机时段，错过还会补跑。 |
-| **`capture-workbuddy-token.js` 无头抓取失败** | 实测（2026-09-29）：若浏览器 profile 无有效登录态，无头跑 90 秒仍返回 `no-usable-token`。需执行一次 `--login` 在可见浏览器里手动登录，登录态落盘后自动刷新才可用。**只要平时开着桌面端，日志采集就能持续续期，这条兜底不必依赖。** |
-| **`register-task.ps1` 报语法错误** | 该文件含中文，必须保存为 **UTF-8 with BOM**；否则 PowerShell 5.1 按 GBK 解析会出错。 |
-
----
-
-## 七、安全
-
-- `config.json`（含 token）与 `trae-token.json` **不要提交到公开仓库、不要分享给他人**。
-  仓库里的 `.gitignore` 已排除这些文件。
-- 脚本只**读取** Trae 的登录态文件，**绝不修改**它。
-- 日志**不记录明文 token**（仅脱敏片段与积分结果）。
-- WorkBuddy 的 token 仅发往 `www.workbuddy.cn` 官方签到接口，**不上传任何第三方**。
-- 仅用于**本机本人账号**的合规个人自动化。
-- **使用上面的「AI 自动部署」提示词时**：请只把它发给你信任的**本机 Agent**。
-  提示词里已明确要求 AI 不回显完整 token，但部署完成后仍建议自己花 10 秒确认一下
-  `config.json` 没有被提交到仓库、也没有被上传到任何地方（`git status` 应看不到它，`.gitignore` 已排除）。
-
----
-
-## License
-
-未指定 License。作者保留所有权利；如需使用请自行评估。
+未指定 License —— 仓库当前没有 `LICENSE` 文件，作者保留所有权利；如需使用请自行评估。
