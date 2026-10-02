@@ -16,5 +16,20 @@
     "uid": "",
     "domain": "",
     "atRestSecretKey": ""
+  },
+  "networkRetry": {
+    "enabled": true,
+    "waitMs": 600000,
+    "probeIntervalMs": 20000
+  },
+  "crossDayGuard": {
+    "enabled": true,
+    "minutes": 60
+  },
+  "notify": {
+    "enabled": true,
+    "nightStart": "23:00",
+    "nightEnd": "07:00",
+    "lastSlotAfter": "21:00"
   }
 }

@@ -2,6 +2,39 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 的结构，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [1.2.0] - 2026-10-02
+
+00:01 签到 + 断网补签 + 不打扰式系统通知。
+
+### 新增
+
+- **00:01 每日触发**：`$TriggerTimes` 变为 `00:01 / 09:00 / 13:00 / 17:00 / 21:00` 共 5 档；不设 `WakeToRun`，睡眠/关机期间不唤醒，醒来或联网后由 `StartWhenAvailable` 与联网补签任务补跑。
+- **断网兜底（三层）**：① `lib/net.js` 识别网络类错误，在预算内（默认 ≤10 分钟，受看门狗与 6 分钟预留限制）等联网后重试一轮；② 新增计划任务 `DailyCheckinOnNet`，订阅 `Microsoft-Windows-NetworkProfile/Operational` 事件 `10000`（网络已连接），延迟 15 秒以 `--quiet-skip` 补签；③ 原有 5 个时段照常兜底。
+- **系统通知（零依赖）**：新增 `notify-toast.ps1`（Windows PowerShell 5.1 + WinRT）与 `lib/notify.js`。成功每天一条汇总（白天静默横幅、夜间只进通知中心）；失败/断网超时/漏签风险用横幅+提示音；通知失败只写日志，不影响签到。新增 `--no-notify` 开关。
+- **跨天保护**：0 点刚过时接口返回的「今日已签到」不记为当日完成（默认 60 分钟窗口），避免服务端跨天晚于本地 0 点时整整漏签一天；真实领取成功不受影响。
+- **`--quiet-skip`**：两端今日都完成时静默退出（不写日志、不抢锁），供联网补签任务使用。
+- 新配置块 `networkRetry` / `crossDayGuard` / `notify`（缺键按默认，旧 config.json 直接可用）；新环境变量 `CHECKIN_NET_WAIT_MS` / `CHECKIN_NET_PROBE_HOSTS` / `CHECKIN_CROSS_DAY_GUARD_MINUTES` / `CHECKIN_LAST_SLOT_AFTER`。
+
+### 修复
+
+- **Node 24 上「fetch 后立刻 process.exit()」崩溃**：Windows 上会稳定触发 `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)`（退出码 `0xC0000409`）。收尾改为先交还事件循环自然排空、再用 unref 定时器（3 秒）兜底强杀；托管 Node 22 与系统 Node 24 均已实测退出码 0。
+- **`lib/trae.js` 断网时空转**：请求异常若属网络类，立即返回 `networkError`，不再消耗 9074 的退避重试与 8 分钟总时限。
+- **`lib/workbuddy.js`**：两处请求异常补 `networkError` 标记；`code=10001` 补 `alreadyCheckedIn`；成功返回补 `credits` / `streakDays`（供通知文案使用）。
+
+### 文档
+
+- README：徽章 1.2.0；触发方式表格 / 使用教程 / 流程图 / 排障表 / 目录结构 / 数据流同步；新增「断网也不漏签」「系统通知」两节；AI 部署提示词改为 5 档 + 双任务。
+- `docs/architecture.md`：模块表新增 `lib/net.js`、`lib/notify.js`、`notify-toast.ps1`；新增「断网兜底（三层）」「系统通知（不打扰式）」两节；运行时产物表补 `state/.notify.json`；已知限制补专注助手与跨天保护说明。
+- `CONTRIBUTING.md`：验证清单补断网 / 通知 / 跨天保护三类用例与 Node 24 退出码检查。
+
+### 实测（本机 Windows 11 22631）
+
+- 单元测试 16 项（错误分类 / 时间窗口 / 通知决策与去重）全部通过；全部 js 文件 `node --check` 通过。
+- 断网 → 等待 → 恢复 → 自动补签 端到端通过（本地假端点模拟，含 60 秒进度行与恢复后重试成功）。
+- 失败告警、同因去重、最后时段重复提醒、`--no-notify`、`--quiet-skip`（已完成=静默 / 未完成=照常跑）均按预期。
+- 跨天保护：`CHECKIN_CROSS_DAY_GUARD_MINUTES=1440` 时不落状态、不发误报告警；改回 0 恢复正常。
+- 三种通知档位（silent / center / alert）均实测可发送，来源显示「自动签到（Trae / WorkBuddy）」。
+
 ## [1.1.2] - 2026-09-29
 
 第四轮审查（逐行复核 + 与远端仓库/文档三方比对）的修复。

@@ -3,11 +3,14 @@
  * 自动签到主程序：依次执行 WorkBuddy 与 Trae 签到，结果写入日志。
  *
  * 用法：
- *   node checkin.js            # 正常跑；当天两端都已完成 → 整轮直接跳过
- *   node checkin.js --force    # 忽略「当日已完成」标记，强制重跑（排障用）
+ *   node checkin.js               # 正常跑；当天两端都已完成 → 整轮直接跳过
+ *   node checkin.js --force       # 忽略「当日已完成」标记，强制重跑（排障用）
+ *   node checkin.js --quiet-skip  # 两端今日都完成时静默退出（不写日志、不抢锁），供联网补签触发任务用
+ *   node checkin.js --no-notify   # 本轮不发系统通知（排障用）
  *
- * 计划任务每天调用本文件 4 次（09:00 / 13:00 / 17:00 / 21:00），
+ * 计划任务每天调用本文件 5 次（00:01 / 09:00 / 13:00 / 17:00 / 21:00），
  * 实际由 run-hidden.vbs 以隐藏窗口拉起，不会弹出命令提示符。
+ * 另有 DailyCheckinOnNet：系统报告「网络已连接」时立即补跑一次（断网兜底的最后一层）。
  *
  * 设计要点：
  *   - 无感运行：wscript 隐藏窗口启动 node，全程无可见窗口、无交互
@@ -19,6 +22,10 @@
  *   - Trae：自动从客户端 storage.json 提取 token（约 14 天有效、客户端自动刷新），
  *     内置 9074 限流重试 + 8 分钟总时限；已签到则直接跳过
  *   - 两端独立容错，互不影响：一端失败只重试该端，不会让另一端重复签到
+ *   - 断网兜底：请求失败若判定为「网络不可用」，本轮会在预算内等网络恢复再重试；
+ *     等不到就交给联网事件任务与下一个时段，绝不把「断网」当成「签到失败」草草收场
+ *   - 跨天保护：0 点刚过时接口返回的「今日已签到」可能还是昨天的状态，不记为当日完成
+ *   - 系统通知：成功每天一条汇总（不打扰档位），失败/漏签风险必提醒
  */
 const fs = require('fs');
 const path = require('path');
@@ -27,13 +34,18 @@ const { traeCheckin } = require('./lib/trae.js');
 const { workbuddyCheckin } = require('./lib/workbuddy.js');
 const { pickBestToken } = require('./lib/token-sources.js');
 const dailyState = require('./lib/daily-state.js');
+const net = require('./lib/net.js');
+const notify = require('./lib/notify.js');
 
 const ROOT = __dirname;
 const CONFIG_PATH = path.join(ROOT, 'config.json');
 const LOG_PATH = path.join(ROOT, 'checkin.log');
 const CAPTURE_SCRIPT = path.join(ROOT, 'capture-workbuddy-token.js');
 
-const FORCE = process.argv.slice(2).includes('--force');
+const ARGS = process.argv.slice(2);
+const FORCE = ARGS.includes('--force');
+const QUIET_SKIP = ARGS.includes('--quiet-skip');
+const NO_NOTIFY = ARGS.includes('--no-notify');
 
 // ── 运行防护 ─────────────────────────────────────────────────────────────
 // 计划任务现在通过 wscript 立即返回（隐藏窗口启动），于是任务层面的
@@ -224,19 +236,84 @@ function tryRefreshWorkbuddyToken(force) {
   }
 }
 
-/** WorkBuddy 单端签到；成功（含幂等「今日已签到」）则记入当日状态 */
-async function runWorkbuddy(cfg, state) {
+// ── 配置读取（config.json 缺键时用默认值，保证旧配置直接可用） ────────────────
+
+/** 跨天保护窗口分钟数：CHECKIN_CROSS_DAY_GUARD_MINUTES > config.crossDayGuard.minutes > 60 */
+function crossDayGuardMinutes(cfg) {
+  const env = Number(process.env.CHECKIN_CROSS_DAY_GUARD_MINUTES);
+  if (Number.isFinite(env) && env >= 0) return env;
+  const g = cfg && cfg.crossDayGuard;
+  if (g && Number.isFinite(Number(g.minutes))) return Number(g.minutes);
+  return 60;
+}
+
+/** 断网重试参数：CHECKIN_NET_WAIT_MS > config.networkRetry.waitMs > 10 分钟 */
+function networkRetryConfig(cfg) {
+  const r = (cfg && cfg.networkRetry) || {};
+  const envWait = Number(process.env.CHECKIN_NET_WAIT_MS);
+  return {
+    enabled: r.enabled !== false,
+    waitMs: Number.isFinite(envWait) && envWait > 0
+      ? envWait
+      : (Number.isFinite(Number(r.waitMs)) && Number(r.waitMs) > 0 ? Number(r.waitMs) : 10 * 60 * 1000),
+    probeIntervalMs: Number.isFinite(Number(r.probeIntervalMs)) && Number(r.probeIntervalMs) > 0
+      ? Number(r.probeIntervalMs)
+      : 20000,
+  };
+}
+
+/** 等待联网的可用预算：配置值、看门狗剩余时间、6 分钟重试预留三者取最小 */
+function networkWaitBudget(configuredMs, startedAt) {
+  const RESERVE_MS = 6 * 60 * 1000; // 给「联网后重试」留余量，别撞上看门狗
+  const remaining = WATCHDOG_MS - (Date.now() - startedAt) - RESERVE_MS;
+  return Math.max(0, Math.min(configuredMs, remaining));
+}
+
+function sideLabel(key) {
+  return key === 'workbuddy' ? 'WorkBuddy' : 'Trae';
+}
+
+/**
+ * 记入「当日已完成」；但命中跨天保护窗口时只写日志、不落盘。
+ *
+ * 为什么要保护：接口的「今日已签到」是服务端按它自己的时刻翻篇的。本地 0 点刚过时
+ * 拿到的很可能还是「昨天」的状态，若直接记为今天完成，后面的时段全部跳过 —— 整整漏签一天。
+ * 真实领取成功（非幂等路径）不受影响；幂等返回则留给下一个时段复核，代价只是多查一次。
+ */
+function markDoneWithCrossDayGuard(cfg, state, key, r) {
+  const minutes = crossDayGuardMinutes(cfg);
+  if (r.alreadyCheckedIn && net.inCrossDayWindow(minutes)) {
+    log(`[跨天保护] ${sideLabel(key)} 返回「今日已签到」，但当前处于跨天保护窗口（00:00 起 ${net.formatDuration(minutes * 60000)}），`
+      + '可能是服务端还没跨天（昨天的状态），不记为当日完成，留给后续时段复核');
+    return false;
+  }
+  dailyState.markDone(state, key, r.message);
+  return true;
+}
+
+/**
+ * WorkBuddy 单端签到。
+ * @returns {Promise<{ok,networkError,message,credits,streakDays,alreadyCheckedIn,pendingReview}>}
+ */
+async function runWorkbuddy(cfg, state, ctx) {
+  const out = { ok: false, networkError: false, message: '' };
   try {
     if (needRefreshWorkbuddyToken(cfg)) {
-      tryRefreshWorkbuddyToken(true);
-      // 刷新后重新读取 config（token 可能已更新）
-      try { Object.assign(cfg, loadConfig()); } catch (_) {}
+      if (ctx && ctx.online === false) {
+        // 断网时抓 token 必然失败，还要白等最多 6 分钟（浏览器启动 + 超时）—— 直接跳过
+        log('[WorkBuddy] 当前探测不到网络，跳过 token 自动刷新（联网后本轮重试或下个时段会再试）');
+      } else {
+        tryRefreshWorkbuddyToken(true);
+        // 刷新后重新读取 config（token 可能已更新）
+        try { Object.assign(cfg, loadConfig()); } catch (_) {}
+      }
     }
     const r = await workbuddyCheckin(cfg);
+    Object.assign(out, r);
     if (r.ok) {
       log(`[WorkBuddy] 成功：${r.message}${r.preview ? ' ' + r.preview : ''}`);
-      dailyState.markDone(state, 'workbuddy', r.message);
-      return true;
+      if (!markDoneWithCrossDayGuard(cfg, state, 'workbuddy', r)) out.pendingReview = true;
+      return out;
     }
     log(`[WorkBuddy] 失败：${r.message}`);
     // 失败且疑似 token 问题 → 再刷新一次并重试
@@ -244,40 +321,73 @@ async function runWorkbuddy(cfg, state) {
       if (tryRefreshWorkbuddyToken(true)) {
         try { Object.assign(cfg, loadConfig()); } catch (_) {}
         const r2 = await workbuddyCheckin(cfg);
+        Object.assign(out, r2);
         if (r2.ok) {
           log(`[WorkBuddy] 刷新 token 后成功：${r2.message}`);
-          dailyState.markDone(state, 'workbuddy', r2.message);
-          return true;
+          if (!markDoneWithCrossDayGuard(cfg, state, 'workbuddy', r2)) out.pendingReview = true;
+          return out;
         }
         log(`[WorkBuddy] 刷新 token 后仍失败：${r2.message}`);
       }
     }
   } catch (e) {
+    out.message = '异常：' + e.message;
     log(`[WorkBuddy] 异常：${e.message}`);
   }
-  return false;
+  return out;
 }
 
-/** Trae 单端签到；成功（含「今日已签到（跳过领取）」）则记入当日状态 */
+/** Trae 单端签到；返回值同 runWorkbuddy */
 async function runTrae(cfg, state) {
+  const out = { ok: false, networkError: false, message: '' };
   try {
     const r = await traeCheckin(cfg.trae || {});
+    Object.assign(out, r);
     const src = r.tokenSource
       ? `（token来源:${r.tokenSource}${r.tokenExpDays != null ? `,剩余${r.tokenExpDays.toFixed(1)}天` : ''}）`
       : '';
     if (r.ok) {
       log(`[Trae] 成功：${r.message}${r.credits != null ? ' 获得积分=' + r.credits : ''}${src}`);
-      dailyState.markDone(state, 'trae', r.message);
-      return true;
+      if (!markDoneWithCrossDayGuard(cfg, state, 'trae', r)) out.pendingReview = true;
+      return out;
     }
     log(`[Trae] 失败：${r.message}${src}`);
   } catch (e) {
+    out.message = '异常：' + e.message;
     log(`[Trae] 异常：${e.message}`);
   }
-  return false;
+  return out;
+}
+
+/** 收尾通知：成功每天一条汇总；失败/断网超时/漏签风险按档位提醒（详见 lib/notify.js） */
+function sendRunNotification(cfg, state, results, flags) {
+  if (NO_NOTIFY) return;
+  // pendingReview（被跨天保护拦下、其实接口说「已签到」的一端）不算失败：
+  // 0 点刚过时若两端都是这种情况，发「签到未完成」告警是误报，只会吓人 —— 现场只写日志。
+  const pendingSides = ['workbuddy', 'trae'].filter((k) => !dailyState.isDone(state, k)
+    && !(results[k] && results[k].pendingReview));
+  const decision = notify.notifyRun({
+    cfg,
+    state,
+    bothDone: flags.wbDone && flags.traeDone,
+    pendingSides,
+    results,
+  }, log);
+  if (decision && decision.mark) {
+    try { dailyState.markNotified(state, decision.mark.key, decision.mark.value); } catch (_) { /* 落盘失败不影响主流程 */ }
+  }
 }
 
 async function run() {
+  // ⓪ --quiet-skip：联网补签任务专用。两端今日都已完成时直接退出，不写日志、不抢锁
+  //    （网络每次重连都会触发一次，不能让日志被「已完成跳过」刷屏）
+  if (QUIET_SKIP) {
+    try {
+      const s = dailyState.loadState();
+      if (dailyState.isDone(s, 'workbuddy') && dailyState.isDone(s, 'trae')) return;
+    } catch (_) { /* 状态读不到就照常往下走 */ }
+  }
+
   // ① 单实例：上一次未结束时本次直接退出（取代任务层面的 IgnoreNew）
   const lock = acquireLock();
   if (!lock.ok) {
@@ -290,6 +400,8 @@ async function run() {
 
   const cfg = loadConfig();
   const state = dailyState.loadState();
+  const retryCfg = networkRetryConfig(cfg);
+  const runStartedAt = Date.now();
 
   const wbDone = dailyState.isDone(state, 'workbuddy');
   const traeDone = dailyState.isDone(state, 'trae');
@@ -302,18 +414,52 @@ async function run() {
 
   log(`===== 自动签到开始 =====${FORCE ? '（--force：忽略当日已完成标记）' : ''}`);
 
-  // ③ WorkBuddy：当天已完成则跳过该端，只补做未完成的一端
-  if (!FORCE && wbDone) {
-    log(`[WorkBuddy] 今日已完成（${state.workbuddy.at}），跳过`);
-  } else {
-    await runWorkbuddy(cfg, state);
+  // ③ 待办集合：当天已完成的一端直接跳过，只补做未完成的一端
+  const results = {};
+  const pending = new Set(['workbuddy', 'trae'].filter((k) => FORCE || !dailyState.isDone(state, k)));
+  for (const key of ['workbuddy', 'trae']) {
+    if (!pending.has(key)) log(`[${sideLabel(key)}] 今日已完成（${state[key].at}），跳过`);
   }
 
-  // ④ Trae：同上
-  if (!FORCE && traeDone) {
-    log(`[Trae] 今日已完成（${state.trae.at}），跳过`);
-  } else {
-    await runTrae(cfg, state);
+  // ④ 至多两轮：第一轮失败若判定为断网，等网络恢复后再补一轮（预算见 networkWaitBudget）
+  const MAX_PASSES = 2;
+  for (let pass = 0; pass < MAX_PASSES && pending.size; pass += 1) {
+    if (pass > 0) {
+      const budget = networkWaitBudget(retryCfg.waitMs, runStartedAt);
+      if (budget <= 0) {
+        log('[网络] 等待联网的预算不足（看门狗时限临近），本轮结束；联网后计划任务会自动补签');
+        break;
+      }
+      const lastErr = Array.from(pending).map((k) => (results[k] && results[k].message) || '').filter(Boolean).join('；');
+      log(`[网络] 检测到断网（${String(lastErr).slice(0, 160)}），等待网络恢复后重试（最多 ${net.formatDuration(budget)}）`);
+      const recovered = await net.waitForNetwork({
+        timeoutMs: budget,
+        intervalMs: retryCfg.probeIntervalMs,
+        onProgress: (elapsed, total) => log(`[网络] 仍在等待联网（已等 ${net.formatDuration(elapsed)} / 最多 ${net.formatDuration(total)}）`),
+      });
+      if (!recovered) {
+        log('[网络] 等待联网超时，本轮结束；联网后计划任务会自动补签');
+        break;
+      }
+      log('[网络] 网络已恢复，重试未完成的一端');
+    }
+
+    const online = await net.isOnline({ timeoutMs: 3000 });
+    if (!online) log('[网络] 探测不到网络（断网中），本轮请求可能直接失败');
+    let networkFailure = false;
+    for (const key of Array.from(pending)) {
+      const r = key === 'workbuddy'
+        ? await runWorkbuddy(cfg, state, { online })
+        : await runTrae(cfg, state);
+      results[key] = r;
+      if (dailyState.isDone(state, key)) {
+        pending.delete(key);
+      } else if (r.networkError) {
+        networkFailure = true;
+      }
+    }
+    if (!pending.size) break;
+    if (!networkFailure || !retryCfg.enabled) break;
   }
 
   // ⑤ 收尾：报告当日整体状态；两端都完成则明确提示后续时段会自动跳过
@@ -327,6 +473,9 @@ async function run() {
   }
 
   log('===== 自动签到结束 =====');
+
+  // ⑥ 通知（成功汇总 / 失败与漏签告警）；通知失败只写日志，绝不影响上面的结果
+  sendRunNotification(cfg, state, results, { wbDone: wbNow, traeDone: traeNow });
 }
 
 /** 看门狗 + 锁释放的统一收尾（任务层面已无运行时长上限，这里必须自兜） */
@@ -345,10 +494,27 @@ function withWatchdog() {
   });
 }
 
+/**
+ * 收尾退出。
+ *
+ * 为什么不直接 process.exit()：Node 24（内置 fetch/undici）在请求刚结束后立刻强杀进程，
+ * 会稳定踩到句柄收尾断言崩溃（Windows 上是
+ * "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)"，退出码 0xC0000409，
+ * 2026-10-02 实测；托管 Node 22.22.2 无此问题）。这里统一走稳妥路径：
+ * 退出码交给事件循环自然排空（实测 1 秒内退出），再用一个 unref 的定时器兜底 ——
+ * 万一有句柄残留（如 keep-alive 连接）到点强杀，保证「进程一定会结束」这条底线不变。
+ */
+const HARD_EXIT_DELAY_MS = 3000;
+function finish(code) {
+  process.exitCode = code;
+  const hardExit = setTimeout(() => process.exit(code), HARD_EXIT_DELAY_MS);
+  hardExit.unref(); // 它自己不持有事件循环：正常排空时进程立即退出，无需等它
+}
+
 withWatchdog()
-  .then(() => { releaseLock(); process.exit(0); })
+  .then(() => { releaseLock(); finish(0); })
   .catch((e) => {
     releaseLock();
     log('致命错误：' + (e && e.message ? e.message : e));
-    process.exit(1);
+    finish(1);
   });

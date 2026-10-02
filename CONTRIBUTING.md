@@ -23,6 +23,7 @@ npm run install-browser   # 仅在需要 Playwright 兜底抓 token 时
 - `lib/*.js` —— 每个平台一个模块，导出单一的 `xxxCheckin(cfg)`，返回 `{ ok, message, ... }`，**不抛异常当控制流**；
 - `run-hidden.vbs` —— **必须保持纯 ASCII**。VBS 被按 ANSI 解析，写入中文会变成乱码甚至语法错误。失败提示也必须用英文（`[launcher] FAILED to start node`）。**另注意变量名不能用 VBScript 保留字**（`sub` / `function` / `next` / `set` 等）：`Dim sub` 这种写法会让整个脚本解析失败，表现为任务结果码变成 `1`、日志一行都不写 —— 是最难察觉的静默故障；
 - `register-task.ps1` —— **必须保存为 UTF-8 with BOM**。PowerShell 5.1 读取无 BOM 的 UTF-8 脚本时中文会变乱码并报语法错误。多数编辑器会在保存时丢 BOM，改完请复核头三字节是否为 `ef bb bf`。
+- `notify-toast.ps1` —— 与 `register-task.ps1` 同样**必须保存为 UTF-8 with BOM**（含中文文案，PS 5.1 按 ANSI 解析会乱码）。它由 node 以 `windowsHide` 拉起，**绝不能**改成 `MsgBox` / `msg.exe` 这类会抢焦点的弹窗。
 
 ## 改签到接口前必读
 
@@ -47,6 +48,13 @@ npm run install-browser   # 仅在需要 Playwright 兜底抓 token 时
 | 改过 `run-hidden.vbs` 时 | 先做语法自检：`cscript //B //Nologo run-hidden.vbs` 退出码必须为 **0**（VBS 语法错时为 `1`，且不会启动 node）；再走上面的 `Start-ScheduledTask` 复测 |
 | 语法自检 | `node --check checkin.js`、`node --check lib/*.js` 通过 |
 | 注册脚本 | PowerShell AST 解析无错，头三字节为 `ef bb bf` |
+| 断网等待 | `CHECKIN_NET_WAIT_MS=20000 CHECKIN_NET_PROBE_HOSTS=offline.invalid WB_ENDPOINT=https://offline.invalid node checkin.js --force` → 日志出现 `[网络] 检测到断网…` 与 `[网络] 等待联网超时…`，exit 0，且当天状态不被本轮失败写成"已完成" |
+| 联网恢复 | 让探针先不可达再恢复（或断网→恢复）→ 日志出现 `[网络] 网络已恢复，重试未完成的一端` 并完成签到 |
+| 通知档位 | 依次调用 `notify-toast.ps1`（silent / center / alert 三种 payload）→ exit 0；`checkin.log` 出现 `[通知] 已发送（档位）…` |
+| 通知去重 | 同一失败原因重复跑第二次 → 不再出现新的 `[通知] 已发送` 行；`CHECKIN_LAST_SLOT_AFTER=00:00` 时"漏签风险"档会再次提醒 |
+| 跨天保护 | `CHECKIN_CROSS_DAY_GUARD_MINUTES=1440 node checkin.js --force` → 出现 `[跨天保护]` 行，state 的 `at` 不被刷新，且不发通知；改回 0 恢复正常 |
+| 静默跳过 | 两端今日已完成时 `node checkin.js --quiet-skip` → `checkin.log` 行数不变、exit 0、无通知；未完成时应照常跑完整流程 |
+| 退出码（Node 24） | Windows + Node 24 下任意路径退出码必须为 0；若出现 `Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)`，说明收尾又被改成立刻 `process.exit()` |
 
 注意：`wscript.exe` 的退出码恒为 0，所以**只看任务结果码无法证明脚本真的跑起来了** —— 必须同时确认日志有新行。
 
